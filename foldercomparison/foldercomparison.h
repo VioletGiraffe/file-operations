@@ -1,0 +1,53 @@
+#pragma once
+
+#include "compiler/compiler_warnings_control.h"
+
+DISABLE_COMPILER_WARNINGS
+#include <QString>
+RESTORE_COMPILER_WARNINGS
+
+#include <atomic>
+#include <functional>
+#include <optional>
+#include <stdint.h>
+#include <vector>
+
+enum class EntryDifference {
+	OnlyInLeft,
+	OnlyInRight,
+	Different,
+	ComparisonFailed // Present on both sides, but unreadable, so equality could not be established either way
+};
+
+struct FolderComparisonEntry {
+	QString relativePath; // Slash-separated, no leading or trailing slash; cased as found on disk
+	EntryDifference status = EntryDifference::Different;
+	// Present only for a regular file that exists on that side.
+	std::optional<uint64_t> leftSize;
+	std::optional<uint64_t> rightSize;
+};
+
+struct FolderComparisonResult {
+	std::vector<FolderComparisonEntry> differences; // Sorted by relativePath; identical entries are not listed
+	uint64_t identicalFiles = 0; // Files proven byte-identical - the "N files verified" figure
+	bool aborted = false;
+};
+
+// How the two sides' relative paths are matched up. The tolerant mode is what pairs entries across filesystems that
+// disagree on letter case or on Unicode normalization; asking whether one tree is precisely the expected tree needs
+// Exact instead, where a name that only differs in spelling is a difference rather than a match.
+enum class PairingMode {
+	Exact,
+	FoldCaseAndNormalization // Exact matches first, folded only for what is left over
+};
+
+// Recursive content-aware comparison of two directory trees. Entries are paired by relative path per pairingMode, and a
+// pair is only read byte by byte when the cheap checks - entry type, then size - cannot already tell the two apart.
+// Directory links are followed and files are compared through links, so a link is judged by the contents a transfer
+// would actually copy.
+// A directory present on one side only contributes an entry for itself and one for each of its descendants, leaving the
+// caller free to collapse them for display.
+// Progress covers the content-comparison phase only - enumeration runs first and has no denominator to report against.
+FolderComparisonResult compareFolders(const QString& leftRoot, const QString& rightRoot,
+	PairingMode pairingMode = PairingMode::Exact, const std::atomic<bool>& abort = std::atomic<bool>{false},
+	const std::function<void (int percent)>& onProgress = {});

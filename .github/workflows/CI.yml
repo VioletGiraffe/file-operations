@@ -1,0 +1,238 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  test:
+    name: Build & run tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-latest]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    # config.pri expects the dependencies beside this repository
+    - name: Checkout dependencies
+      shell: bash
+      run: |
+        for repository in cpputils cpp-template-utils qtutils thin_io; do
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/VioletGiraffe/$repository ../$repository
+        done
+
+    # The action's default arch per runner: win64_msvc2022_64, linux_gcc_64 / linux_gcc_arm64, clang_64
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.11.2'
+        # Qt 6.11's Windows repository layout needs an aqtinstall newer than its latest release (3.3.0)
+        aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+        target: desktop
+        archives: 'qtbase icu qtsvg'
+        modules: 'qt5compat qtimageformats'
+        cache: 'true'
+
+    - name: Setup MSVC Developer Command Prompt
+      if: startsWith(matrix.os, 'windows')
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Linux - install build dependencies
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        sudo apt update -y; sudo apt install -qq gcc-14 g++-14 libglu1-mesa-dev libx11-xcb-dev '^libxcb*' '^libxkb*'
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 50
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 50
+        g++ --version
+
+    - name: Building tests - Windows
+      if: startsWith(matrix.os, 'windows')
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      shell: cmd
+      run: scripts\run_tests.bat -BuildOnly
+
+    - name: Setup RAM Disk
+      if: startsWith(matrix.os, 'windows')
+      uses: chad-golden/setup-ramdisk@v1.0.1
+      with:
+        size-in-mb: 512    # Optional: Default is 2048
+        drive-letter: 'R'   # Optional: Default is R
+        copy-workspace: false # Optional: Default is false
+
+    - name: Second RAM disk and temp folders
+      if: startsWith(matrix.os, 'windows')
+      shell: pwsh
+      run: |
+        # Fail the step if imdisk does (pwsh otherwise propagates only the last command's exit code)
+        $PSNativeCommandUseErrorActionPreference = $true
+        $ErrorActionPreference = 'Stop'
+        # The action above leaves ImDisk in System32, so a second RAM disk is one command. S: has to be a
+        # volume genuinely distinct from R: - that is the whole point of the cross-volume tests.
+        imdisk -a -s 128M -m S: -p "/FS:NTFS /Q /Y"
+        # R: is created by the third-party action; format it here so its filesystem is ours to state rather than
+        # to inherit. Wipes the disk, which is only safe while the action's copy-workspace input is false.
+        # format.com, not Format-Volume: ImDisk volumes are absent from the Storage provider the cmdlets query.
+        format.com R: /FS:NTFS /Q /Y /V:RAMDISK
+        # The volumes of the exFAT and FAT32 test run
+        imdisk -a -s 256M -m T: -p "/FS:exFAT /Q /Y"
+        imdisk -a -s 256M -m U: -p "/FS:FAT32 /Q /Y"
+        # imdisk delegates -p to format.com and does not report its failure, so assert the end state on every disk:
+        # anything but NTFS on R: and S: silently drops the reparse-point coverage that needs it. DriveInfo asks the
+        # filesystem directly, for the same reason format.com is used above.
+        $expected = [ordered]@{ R = 'NTFS'; S = 'NTFS'; T = 'exFAT'; U = 'FAT32' }
+        foreach ($letter in $expected.Keys) {
+          $filesystem = [System.IO.DriveInfo]::new("${letter}:").DriveFormat
+          if ($filesystem -ne $expected[$letter]) { throw "${letter}: is $filesystem, expected $($expected[$letter])" }
+          New-Item -Path "${letter}:\Temp" -ItemType Directory -Force
+        }
+        echo "TEMP=R:\\Temp" >> $env:GITHUB_ENV
+        echo "TMP=R:\\Temp"  >> $env:GITHUB_ENV
+        echo "TMPDIR=R:\\Temp" >> $env:GITHUB_ENV
+        echo "FILE_COMMANDER_TEST_SECOND_VOLUME=S:\\Temp" >> $env:GITHUB_ENV
+        # The runner is elevated, so symlink creation is available; setting this turns a failure to create one
+        # into a test failure instead of a skip.
+        echo "FILE_COMMANDER_TEST_SYMLINKS=1" >> $env:GITHUB_ENV
+
+    - name: Running tests - Windows
+      if: startsWith(matrix.os, 'windows')
+      shell: pwsh
+      run: |
+        # Fail the step on the first suite that exits with a nonzero code (default pwsh behavior only propagates the last command's exit code)
+        $PSNativeCommandUseErrorActionPreference = $true
+        $ErrorActionPreference = 'Stop'
+        # Every suite, minus the slow generated-data tests that the seeded runs below cover
+        .\scripts\run_tests.bat -NoBuild
+        $N=20
+        For ($i=1; $i -le $N; $i++) {
+          Write-Output "Iteration $i/$N"
+          .\scripts\run_tests.bat -NoBuild -All -Suite fileoperations_test --std-seed (Get-Random)
+        }
+
+        .\scripts\run_tests.bat -NoBuild -All -Suite foldercomparison_test --std-seed (Get-Random)
+
+    - name: Running tests on exFAT and FAT32 - Windows
+      if: startsWith(matrix.os, 'windows')
+      timeout-minutes: 20
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # Everything runs but what these filesystems cannot do: tests that need a link skip themselves. The
+        # comparator's generated data does not fit these disks.
+        foreach ($letter in 'T', 'U') {
+          Write-Output "===== Temporary folders on ${letter}:"
+          $env:TEMP = "${letter}:\Temp"
+          $env:TMP = "${letter}:\Temp"
+          $env:TMPDIR = "${letter}:\Temp"
+          # Both volumes always run; the step fails at the end
+          .\scripts\run_tests.bat -NoBuild
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          .\scripts\run_tests.bat -NoBuild -All -Suite fileoperations_test --std-seed (Get-Random)
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+        }
+        if ($failed) { exit 1 }
+
+    - name: Building tests - Mac
+      if: startsWith(matrix.os, 'macos')
+      run: ./scripts/run_tests.sh build
+
+    - name: Case-sensitive second volume for filesystem tests - Mac
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        set -e
+        # TMPDIR is on the system volume, so this RAM disk is genuinely different. HFSX also gives the
+        # rename tests a case-sensitive volume without provisioning and attaching another disk.
+        disk=$(hdiutil attach -nomount ram://262144 | awk '{print $1}')  # 512-byte sectors: 128 MB
+        diskutil erasevolume HFSX fc-second "$disk"
+        echo "FILE_COMMANDER_TEST_SECOND_VOLUME=/Volumes/fc-second" >> $GITHUB_ENV
+        echo "FILE_COMMANDER_TEST_CASE_SENSITIVE_VOLUME=/Volumes/fc-second" >> $GITHUB_ENV
+        # Symlink creation needs no privileges here, so a failure to create one is a test failure, not a skip
+        echo "FILE_COMMANDER_TEST_SYMLINKS=1" >> $GITHUB_ENV
+
+    - name: Running tests - Mac
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        set -e
+        # Every suite, minus the slow generated-data tests that the seeded runs below cover
+        ./scripts/run_tests.sh nobuild
+        # A seed of the current second needs the sleep to differ between iterations
+        for i in `seq 1 20`; do echo "Iteration $i"; ./scripts/run_tests.sh nobuild all fileoperations_test --std-seed $(date +%s); sleep 1; done
+        ./scripts/run_tests.sh nobuild all foldercomparison_test --std-seed $(date +%s)
+
+    - name: Running tests on exFAT and FAT32 - Mac
+      if: startsWith(matrix.os, 'macos')
+      timeout-minutes: 20
+      run: |
+        set -e
+        exfat=$(hdiutil attach -nomount ram://524288 | awk '{print $1}')  # 512-byte sectors: 256 MB
+        diskutil erasevolume ExFAT FCEXFAT "$exfat"
+        fat32=$(hdiutil attach -nomount ram://524288 | awk '{print $1}')
+        diskutil erasevolume "MS-DOS FAT32" FCFAT32 "$fat32"
+        # Everything runs but what these filesystems cannot do: tests that need a link skip themselves. The
+        # comparator's generated data does not fit these disks.
+        # Both volumes always run; the step fails at the end
+        failed=0
+        for volume in /Volumes/FCEXFAT /Volumes/FCFAT32; do
+          echo "===== Temporary folders on $volume"
+          TMPDIR="$volume" ./scripts/run_tests.sh nobuild || failed=1
+          TMPDIR="$volume" ./scripts/run_tests.sh nobuild all fileoperations_test --std-seed $(date +%s) || failed=1
+        done
+        exit $failed
+
+    - name: Building tests - Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      run: ./scripts/run_tests.sh build
+
+    - name: Case-sensitive second volume for filesystem tests - Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        set -e
+        # /tmp shares the root filesystem here, so a separate tmpfs mount is what makes a rename into the
+        # destination genuinely report EXDEV. tmpfs is case-sensitive, so it serves the rename tests too.
+        sudo mkdir -p /mnt/fc-second
+        sudo mount -t tmpfs -o size=128M tmpfs /mnt/fc-second
+        sudo chown "$(id -u):$(id -g)" /mnt/fc-second
+        echo "FILE_COMMANDER_TEST_SECOND_VOLUME=/mnt/fc-second" >> $GITHUB_ENV
+        echo "FILE_COMMANDER_TEST_CASE_SENSITIVE_VOLUME=/mnt/fc-second" >> $GITHUB_ENV
+        # Symlink creation needs no privileges here, so a failure to create one is a test failure, not a skip
+        echo "FILE_COMMANDER_TEST_SYMLINKS=1" >> $GITHUB_ENV
+
+    - name: Running tests - Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        set -e
+        # Every suite, minus the slow generated-data tests that the seeded runs below cover.
+        # The script selects the offscreen platform for the widget tests: this runner has no display server.
+        ./scripts/run_tests.sh nobuild
+        # A seed of the current second needs the sleep to differ between iterations
+        for i in `seq 1 20`; do echo "Iteration $i"; ./scripts/run_tests.sh nobuild all fileoperations_test --std-seed $(date +%s); sleep 1; done
+        ./scripts/run_tests.sh nobuild all foldercomparison_test --std-seed $(date +%s)
+
+    - name: Running tests on exFAT and FAT32 - Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      timeout-minutes: 20
+      run: |
+        set -e
+        # The runner's kernel image ships without the exfat driver; it is in the extra modules package.
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends exfatprogs dosfstools "linux-modules-extra-$(uname -r)"
+        sudo modprobe exfat
+        truncate -s 256M "$RUNNER_TEMP/exfat.img" "$RUNNER_TEMP/fat32.img"
+        mkfs.exfat "$RUNNER_TEMP/exfat.img"
+        mkfs.vfat -F 32 "$RUNNER_TEMP/fat32.img"
+        sudo mkdir -p /mnt/fc-exfat /mnt/fc-fat32
+        # The type is explicit so that a kernel without the driver fails here, not through a FUSE fallback.
+        # uid and gid: these filesystems store no owner, and the tests run unprivileged.
+        sudo mount -t exfat -o "loop,uid=$(id -u),gid=$(id -g)" "$RUNNER_TEMP/exfat.img" /mnt/fc-exfat
+        sudo mount -t vfat -o "loop,uid=$(id -u),gid=$(id -g)" "$RUNNER_TEMP/fat32.img" /mnt/fc-fat32
+        # Everything runs but what these filesystems cannot do: tests that need a link skip themselves. The
+        # comparator's generated data does not fit these disks.
+        # Both volumes always run; the step fails at the end
+        failed=0
+        for volume in /mnt/fc-exfat /mnt/fc-fat32; do
+          echo "===== Temporary folders on $volume"
+          TMPDIR="$volume" ./scripts/run_tests.sh nobuild || failed=1
+          TMPDIR="$volume" ./scripts/run_tests.sh nobuild all fileoperations_test --std-seed $(date +%s) || failed=1
+        done
+        exit $failed
