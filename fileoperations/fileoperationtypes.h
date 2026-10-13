@@ -4,6 +4,7 @@
 
 
 // Submodule includes
+#include "compiler/compiler_warnings_control.h"
 #include "filesystem_error.hpp" // thin_io
 #include "fs.hpp" // thin_io: timestamp
 

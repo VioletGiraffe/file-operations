@@ -7,6 +7,7 @@
 
 // Submodule includes
 #include "assert/advanced_assert.h"
+#include "compiler/compiler_warnings_control.h"
 #include "fs.hpp" // thin_io
 #include "lang/utils.hpp" // mv()
 

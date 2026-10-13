@@ -7,9 +7,12 @@
 #include "fileoperationtesthelpers.h"
 
 
+// Submodule includes
+#include "compiler/compiler_warnings_control.h"
 #ifndef _WIN32
 #include "threading/cinterruptablethread.h"
 #endif
+
 
 DISABLE_COMPILER_WARNINGS
 #include <QStorageInfo>

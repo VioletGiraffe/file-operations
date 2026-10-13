@@ -9,6 +9,7 @@
 
 // Submodule includes
 #include "assert/advanced_assert.h"
+#include "compiler/compiler_warnings_control.h"
 #include "filesystem_error.hpp" // thin_io
 #include "filesystem_types.hpp" // thin_io: native_string
 

@@ -26,8 +26,7 @@ RESTORE_COMPILER_WARNINGS
 // Lossy for a POSIX name that is not valid in the locale's encoding
 [[nodiscard]] QString nativeNameToQString(const thin_io::native_string& name);
 
-// CFileSystemObject normalizes a directory's path to always end with a slash; native APIs are less accommodating,
-// CreateFileW especially, once the \\?\ prefix has turned path normalization off. Strip it before handing a path to
-// one. A root keeps its slash: "C:" names the drive's current directory rather than its root.
+// Strips a directory path's trailing separator: native APIs reject it once the \\?\ prefix has turned path normalization off,
+// CreateFileW especially. A root keeps its separator: "C:" names the drive's current directory rather than its root.
 // Either separator is accepted.
 [[nodiscard]] QString withoutTrailingSeparator(QString path);
