@@ -299,7 +299,7 @@ inline bool permissionBitsUnsupportedByFilesystem([[maybe_unused]] const QString
 
 // Windows grants symlink creation only to an elevated process or one running under Developer Mode, so the
 // coverage that needs a real reparse point cannot be unconditional. CI promises the capability by setting
-// FILE_COMMANDER_TEST_SYMLINKS: there a failure means a misconfigured runner, not a reason to drop the coverage.
+// FILE_OPERATIONS_TEST_SYMLINKS: there a failure means a misconfigured runner, not a reason to drop the coverage.
 // The promise covers filesystems that have links.
 inline bool symlinkCreationUnavailable(const QString& writableDirectory)
 {
@@ -313,8 +313,8 @@ inline bool symlinkCreationUnavailable(const QString& writableDirectory)
 		return false;
 	}
 
-	if (qEnvironmentVariableIsSet("FILE_COMMANDER_TEST_SYMLINKS"))
-		FAIL("FILE_COMMANDER_TEST_SYMLINKS is set, but a symbolic link could not be created");
+	if (qEnvironmentVariableIsSet("FILE_OPERATIONS_TEST_SYMLINKS"))
+		FAIL("FILE_OPERATIONS_TEST_SYMLINKS is set, but a symbolic link could not be created");
 
 	WARN("Symbolic links cannot be created here: symlink sections skipped");
 	return true;

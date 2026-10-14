@@ -23,7 +23,7 @@ using OperationTestHooks::Point;
 namespace
 {
 
-constexpr const char* secondVolumeVariable = "FILE_COMMANDER_TEST_SECOND_VOLUME";
+constexpr const char* secondVolumeVariable = "FILE_OPERATIONS_TEST_SECOND_VOLUME";
 
 } // namespace
 
@@ -31,7 +31,7 @@ TEST_CASE("cross-volume transfer: copy then move against a real second volume", 
 {
 	if (!qEnvironmentVariableIsSet(secondVolumeVariable))
 	{
-		WARN("FILE_COMMANDER_TEST_SECOND_VOLUME is unset: real cross-volume coverage skipped");
+		WARN("FILE_OPERATIONS_TEST_SECOND_VOLUME is unset: real cross-volume coverage skipped");
 		return;
 	}
 

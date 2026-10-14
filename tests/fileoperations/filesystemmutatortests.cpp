@@ -539,7 +539,7 @@ TEST_CASE("renameEntry: an exclusive case self-collision respells through a temp
 
 TEST_CASE("renameEntry: a case-respell onto a distinct entry on a case-sensitive filesystem collides", "[mutator]")
 {
-	static constexpr const char* caseSensitiveVolumeVariable = "FILE_COMMANDER_TEST_CASE_SENSITIVE_VOLUME";
+	static constexpr const char* caseSensitiveVolumeVariable = "FILE_OPERATIONS_TEST_CASE_SENSITIVE_VOLUME";
 	QString testRoot = qEnvironmentVariable(caseSensitiveVolumeVariable);
 	const bool caseSensitiveVolumeRequired = !testRoot.isEmpty();
 	if (!caseSensitiveVolumeRequired)
@@ -557,7 +557,7 @@ TEST_CASE("renameEntry: a case-respell onto a distinct entry on a case-sensitive
 	if (readFileContents(base % "/case.txt") != QByteArray(10, 'a'))
 	{
 		if (caseSensitiveVolumeRequired)
-			FAIL("FILE_COMMANDER_TEST_CASE_SENSITIVE_VOLUME does not name a case-sensitive filesystem");
+			FAIL("FILE_OPERATIONS_TEST_CASE_SENSITIVE_VOLUME does not name a case-sensitive filesystem");
 		WARN("The test volume is case-insensitive: the distinct-entry case-respell collision is not exercised");
 		return;
 	}
