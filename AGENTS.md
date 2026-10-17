@@ -17,7 +17,7 @@
 ## Verification
 
 - `scripts/run_tests.bat` / `scripts/run_tests.sh` build and run the suites. Run the ones that compile what you changed.
-- These suites compile only module sources. A change to a public header or a manifest must also build in each host's full build, applications and plugins included, not only in the host's test tree.
+- These suites compile only module sources. A change to a public header or a manifest must also build in the host's full build, applications and plugins included, not only in the host's test tree.
 
 ## Invariants to preserve
 
