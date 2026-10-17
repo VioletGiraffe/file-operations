@@ -86,8 +86,8 @@ operation, and keep a completed summary visible only when it needs attention. Cl
 later display but does not weaken job/listener lifetime requirements.
 
 `CFileOperationPrompt` renders one decision request: only the actions the engine allows, the "remaining matching
-issues" scope where permitted, and a rename row when renaming is offered. `fileoperationtexts` holds the wording both
-dialogs share.
+issues" scope where permitted, and a rename row when renaming is offered. `fileoperationtexts` holds the wording the
+dialogs and hosts share, request validation errors included.
 
 ## Directory scanning (`directoryscan/`)
 

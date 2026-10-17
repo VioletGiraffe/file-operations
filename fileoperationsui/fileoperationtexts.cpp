@@ -96,3 +96,17 @@ QString newNameRejectionText(const NameRejection rejection)
 	}
 	return {};
 }
+
+QString requestValidationErrorText(const RequestValidationError error)
+{
+	using enum RequestValidationError;
+	switch (error)
+	{
+	case NoSources: return QObject::tr("No valid items are selected for the operation.");
+	case InvalidPath: return QObject::tr("The source or destination path is not a valid absolute path.");
+	case RootSource: return QObject::tr("A drive root cannot be copied, moved, or deleted.");
+	case ExactEntryRequiresSingleSource: return QObject::tr("An exact destination entry can only be chosen for a single source.");
+	case DestinationInsideSource: return QObject::tr("The destination cannot be inside a selected source.");
+	}
+	return {};
+}
