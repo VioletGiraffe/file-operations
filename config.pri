@@ -21,7 +21,6 @@ exists($$PWD/../global.pri) {
 	Debug:DEFINES += _DEBUG
 
 	win* {
-		DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
 		QMAKE_CXXFLAGS += /MP /Zi /FS /utf-8 /std:c++latest /permissive- /Zc:__cplusplus
 		QMAKE_CXXFLAGS_WARN_ON = /W4
 		QMAKE_LFLAGS += /DEBUG
@@ -33,6 +32,9 @@ exists($$PWD/../global.pri) {
 		contains(QMAKE_HOST.arch, arm64)|contains(QMAKE_APPLE_DEVICE_ARCHS, arm64): QMAKE_CXXFLAGS += -include arm_acle.h
 	}
 }
+
+# The sources include Windows.h. Set here: a host's global.pri need not define these.
+win*:DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
 
 Release:OUTPUT_DIR=release
 Debug:OUTPUT_DIR=debug
