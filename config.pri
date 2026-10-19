@@ -35,6 +35,8 @@ exists($$PWD/../global.pri) {
 
 # The sources include Windows.h. Set here: a host's global.pri need not define these.
 win*:DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
+# Omitted aggregate fields take their defaults by design.
+!win*:QMAKE_CXXFLAGS_WARN_ON += -Wno-missing-field-initializers
 
 Release:OUTPUT_DIR=release
 Debug:OUTPUT_DIR=debug
