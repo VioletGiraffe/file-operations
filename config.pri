@@ -6,19 +6,19 @@ QT = core gui widgets
 # Don't override app targets with staticlib, only actual libraries
 contains(TEMPLATE, ".*lib"): CONFIG += staticlib
 
-# A host repository's build settings win where it has them
+CONFIG += strict_c++
+
+# The Release and Debug scopes depend on this; a host's global.pri need not set it
+mac* | linux* | freebsd {
+	CONFIG(release, debug|release):CONFIG *= Release optimize_full
+	CONFIG(debug, debug|release):CONFIG *= Debug
+}
+
+# A host repository's compiler settings win where it has them
 exists($$PWD/../global.pri) {
 	include($$PWD/../global.pri)
 } else {
-	CONFIG += strict_c++ c++2b
-
-	mac* | linux* | freebsd {
-		CONFIG(release, debug|release):CONFIG *= Release optimize_full
-		CONFIG(debug, debug|release):CONFIG *= Debug
-	}
-
-	Release:DEFINES += NDEBUG=1
-	Debug:DEFINES += _DEBUG
+	CONFIG += c++2b
 
 	win* {
 		QMAKE_CXXFLAGS += /MP /Zi /FS /utf-8 /std:c++latest /permissive- /Zc:__cplusplus
@@ -32,6 +32,9 @@ exists($$PWD/../global.pri) {
 		contains(QMAKE_HOST.arch, arm64)|contains(QMAKE_APPLE_DEVICE_ARCHS, arm64): QMAKE_CXXFLAGS += -include arm_acle.h
 	}
 }
+
+Release:DEFINES += NDEBUG=1
+Debug:DEFINES += _DEBUG
 
 # The sources include Windows.h. Set here: a host's global.pri need not define these.
 win*:DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
