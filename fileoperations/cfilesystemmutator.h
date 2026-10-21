@@ -76,6 +76,10 @@ public:
 	// FinalEntryAlreadyExisted so destination resolution remains the one owner of entry-kind collision policy.
 	static std::expected<DirectoryCreationOutcome, CFileSystemError> createDirectories(const CEntryPath& path);
 
+	// Creates an empty regular file in one exclusive native call: an entry already at the path fails with AlreadyExists,
+	// and is never opened or truncated.
+	static std::expected<void, CFileSystemError> createEmptyFile(const CEntryPath& path);
+
 	static std::expected<void, CFileSystemError> applyDirectoryTimes(const CEntryPath& destination, const CopyableDirectoryTimes& times);
 
 	// Sets or clears write permission on a non-link regular file; never follows or remediates a link.

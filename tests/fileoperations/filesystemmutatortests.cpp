@@ -996,6 +996,35 @@ TEST_CASE("removeEntry: forced fault classifies and mutates nothing", "[mutator]
 // Writability
 //
 
+TEST_CASE("createEmptyFile: creates once, and never opens what is already there", "[mutator]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+
+	REQUIRE(CFileSystemMutator::createEmptyFile(ep(base % "/new.txt")).has_value());
+	const auto created = inspectEntry(ep(base % "/new.txt"));
+	REQUIRE(created.has_value());
+	REQUIRE(created->has_value());
+	CHECK((*created)->kind == OperationEntryKind::RegularFile);
+	CHECK((*created)->size == 0);
+
+	writeTestFile(base % "/existing.txt", QByteArray(10, 'e'));
+	const auto overFile = CFileSystemMutator::createEmptyFile(ep(base % "/existing.txt"));
+	REQUIRE_FALSE(overFile.has_value());
+	CHECK(overFile.error().category == FileErrorCategory::AlreadyExists);
+	CHECK(readFileContents(base % "/existing.txt") == QByteArray(10, 'e'));
+
+	REQUIRE(QDir{}.mkpath(base % "/dir"));
+	const auto overDirectory = CFileSystemMutator::createEmptyFile(ep(base % "/dir"));
+	REQUIRE_FALSE(overDirectory.has_value());
+	CHECK(overDirectory.error().category == FileErrorCategory::AlreadyExists);
+
+	const auto missingParent = CFileSystemMutator::createEmptyFile(ep(base % "/missing/new.txt"));
+	REQUIRE_FALSE(missingParent.has_value());
+	CHECK(missingParent.error().category == FileErrorCategory::NotFound);
+}
+
 TEST_CASE("setEntryWritable and isEntryWritableNoFollow: fresh state round trip", "[mutator]")
 {
 	QTemporaryDir tempDir;

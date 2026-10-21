@@ -7,6 +7,7 @@
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "compiler/compiler_warnings_control.h"
+#include "file.hpp" // thin_io
 
 
 DISABLE_COMPILER_WARNINGS
@@ -618,6 +619,29 @@ std::expected<DirectoryCreationOutcome, CFileSystemError> CFileSystemMutator::cr
 	}
 
 	return std::unexpected(makeFileSystemError(errorCode));
+}
+
+std::expected<void, CFileSystemError> CFileSystemMutator::createEmptyFile(const CEntryPath& path)
+{
+	const auto native = thinIoPath(path);
+	thin_io::file file;
+	if (!file.open(nativeCStr(native), thin_io::file::access_mode::Write, thin_io::file::open_disposition::CreateNew))
+	{
+		const NativeErrorCode errorCode = captureNativeError();
+		// Windows reports a directory in the way as access denied: an entry found at the path is the collision
+		if (classifyNativeError(errorCode) != FileErrorCategory::AlreadyExists)
+		{
+			if (const auto existing = inspectEntry(path); existing && existing->has_value())
+				return std::unexpected(makeError(FileErrorCategory::AlreadyExists, errorCode));
+		}
+
+		return std::unexpected(makeFileSystemError(errorCode));
+	}
+
+	if (!file.close())
+		return std::unexpected(makeFileSystemError(captureNativeError()));
+
+	return {};
 }
 
 std::expected<void, CFileSystemError> CFileSystemMutator::applyDirectoryTimes(const CEntryPath& destination, const CopyableDirectoryTimes& times)
