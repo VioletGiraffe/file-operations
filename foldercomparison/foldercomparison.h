@@ -48,6 +48,7 @@ enum class PairingMode {
 // A directory present on one side only contributes an entry for itself and one for each of its descendants, leaving the
 // caller free to collapse them for display.
 // Progress covers the content-comparison phase only - enumeration runs first and has no denominator to report against.
+// Both roots must be absolute.
 FolderComparisonResult compareFolders(const QString& leftRoot, const QString& rightRoot,
 	PairingMode pairingMode = PairingMode::Exact, const std::atomic<bool>& abort = std::atomic<bool>{false},
 	const std::function<void (int percent)>& onProgress = {});

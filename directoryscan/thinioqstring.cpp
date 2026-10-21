@@ -1,5 +1,7 @@
 #include "thinioqstring.h"
 
+#include "paths/pathsyntax.h"
+
 #include "fs.hpp" // thin_io
 
 DISABLE_COMPILER_WARNINGS
@@ -55,7 +57,7 @@ QString nativeNameToQString(const thin_io::native_string& name)
 
 QString withoutTrailingSeparator(QString path)
 {
-	if ((path.endsWith('/') || path.endsWith(QDir::separator())) && !QDir{ path }.isRoot())
+	if ((path.endsWith('/') || path.endsWith(QDir::separator())) && !isRootPath(path))
 		path.chop(1);
 
 	return path;

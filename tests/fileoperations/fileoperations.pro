@@ -18,6 +18,7 @@ SOURCES += \
 	main.cpp \
 	testhooktests.cpp \
 	entrypathtests.cpp \
+	pathsyntaxtests.cpp \
 	newnamechecktests.cpp \
 	filesystemmutatortests.cpp \
 	stagedfilecopytests.cpp \

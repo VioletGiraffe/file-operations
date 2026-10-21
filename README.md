@@ -49,6 +49,7 @@ directory scanning and folder comparison.
 | `fileoperationsui/` | `CFileOperationDialog`, `CFileOperationPrompt`, user-facing wording. QtWidgets. | `fileoperationsui` |
 | `directoryscan/` | `scanDirectory()` and `QString`-path access to thin_io. | `fileoperations` |
 | `foldercomparison/` | `compareFolders()`, `compareFileContents()`. Needs `directoryscan`. | `fileoperations` |
+| `paths/` | Path text grammar: absolute roots, lexical normalization. | `fileoperations` |
 | `libraries/` | The library projects, and the `.pri` files a host includes to link them. | |
 | `test-utils/` | Test fixtures: folder generation, random data, link creation. | `test_utils` |
 | `tests/` | The suites; `tests.pro` builds them with their dependencies. | |

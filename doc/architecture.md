@@ -63,9 +63,13 @@ primitives. Test-only fault injection lives in `operationtesthooks` and compiles
 
 ## Paths
 
+`paths/pathsyntax.h` is the path text grammar the libraries and their hosts share: which spellings are absolute, where
+the root ends, lexical normalization.
+
 The file-operation engine uses `CEntryPath`: an absolute `/`-separated path without a trailing separator except at
-roots. Keep conversions at the type's boundaries. The parser rejects embedded NUL and user-supplied Win32 namespace
-prefixes; native-path prefixing belongs to the native bridge. See
+roots. Keep conversions at the type's boundaries. The parser adds operation rules to the grammar: it rejects embedded
+NUL and `.`/`..` components. Win32 namespace prefixes are not absolute paths to the grammar; native-path prefixing
+belongs to the native bridge. See
 file-commander's `doc/planned-refactors/native-paths.md` for the remaining POSIX filename limitation.
 
 ## Job threading

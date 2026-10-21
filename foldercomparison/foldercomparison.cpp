@@ -5,13 +5,14 @@
 #include "directoryscan/directoryscanner.h"
 #include "directoryscan/thinioqstring.h"
 
+#include "paths/pathsyntax.h"
+
 
 // Submodule includes
 #include "assert/advanced_assert.h"
 
 
 DISABLE_COMPILER_WARNINGS
-#include <QDir>
 #include <QStringBuilder>
 RESTORE_COMPILER_WARNINGS
 
@@ -29,11 +30,11 @@ struct SideEntry {
 
 using SideMap = std::map<QString /* relative path */, SideEntry>;
 
-// Absolute, '/'-separated, ending with '/'.
-// Not QFileInfo::absoluteFilePath(): on Windows it strips trailing dots and spaces from names.
+// '/'-separated, ending with '/'
 QString rootPrefix(const QString& root)
 {
-	const QString path = QDir::cleanPath(QDir{}.absoluteFilePath(root));
+	const QString path = normalizedAbsolutePath(root);
+	assert_r(!path.isEmpty());
 	return path.endsWith('/') ? path : QString{ path % '/' };
 }
 
