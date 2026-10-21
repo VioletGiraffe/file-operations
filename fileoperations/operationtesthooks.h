@@ -3,7 +3,7 @@
 // Deterministic fault / barrier seam for the file-operation module.
 //
 // The module's primitives call fireHook() at named points placed immediately around their native mutation calls.
-// The direct-source test build defines FILE_OPERATIONS_TEST_HOOKS and drives the points through CFaultHookScope:
+// Test builds define FILE_OPERATIONS_TEST_HOOKS and drive the points through CFaultHookScope:
 // a point can return a forced native error code (classified by the primitive exactly as a real native failure),
 // or block at a barrier until the test has changed filesystem state and releases it.
 // Without the define, fireHook() is an empty inline stub and the checks compile out of production code.

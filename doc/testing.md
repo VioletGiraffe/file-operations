@@ -5,8 +5,9 @@ The project files are authoritative for the current test set; this is the map. E
 ## Layout
 
 `tests/tests.pro` builds the suites together with their dependencies, which are checked out beside this repository.
-Each suite compiles the module sources it tests from their `.pri` manifests. A host can build the same suites from its
-own test tree.
+Each suite links the library it tests; `fileoperations_test` and `fileoperationsui_test` link the
+`fileoperations_testhooks` variant, built with the fault hooks active. A host can build the same suites from its own
+test tree.
 
 | Executable | Component |
 |------------|-----------|

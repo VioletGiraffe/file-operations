@@ -43,16 +43,18 @@ directory scanning and folder comparison.
 
 ## Layout
 
-| Folder | Contents | Manifest |
-|--------|----------|----------|
-| `fileoperations/` | The engine. QtCore only. | `fileoperations.pri` |
-| `fileoperationsui/` | `CFileOperationDialog`, `CFileOperationPrompt`, user-facing wording. QtWidgets. | `fileoperationsui.pri` |
-| `directoryscan/` | `scanDirectory()` and `QString`-path access to thin_io. | `directoryscan.pri` |
-| `foldercomparison/` | `compareFolders()`, `compareFileContents()`. Needs `directoryscan`. | `foldercomparison.pri` |
-| `test-utils/` | Test fixtures: folder generation, random data, link creation. | `test-utils.pro` |
+| Folder | Contents | Library |
+|--------|----------|---------|
+| `fileoperations/` | The engine. QtCore only. | `fileoperations` |
+| `fileoperationsui/` | `CFileOperationDialog`, `CFileOperationPrompt`, user-facing wording. QtWidgets. | `fileoperationsui` |
+| `directoryscan/` | `scanDirectory()` and `QString`-path access to thin_io. | `fileoperations` |
+| `foldercomparison/` | `compareFolders()`, `compareFileContents()`. Needs `directoryscan`. | `fileoperations` |
+| `libraries/` | The library projects, and the `.pri` files a host includes to link them. | |
+| `test-utils/` | Test fixtures: folder generation, random data, link creation. | `test_utils` |
 | `tests/` | The suites; `tests.pro` builds them with their dependencies. | |
 
-A host project includes the manifests it needs and puts this repository's root on its include path.
+A host builds the projects in `libraries/` and includes `libraries/fileoperations.pri` or
+`libraries/fileoperationsui.pri`, which add the library, its dependencies and their include paths.
 
 ## Dependencies
 

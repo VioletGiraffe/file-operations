@@ -10,11 +10,9 @@ mac*|linux*|freebsd{
 
 INCLUDEPATH += ../../test-utils/src/
 
-# The engine under test, compiled directly from source with its fault hooks active.
+# The engine under test, with its fault hooks active
 DEFINES += FILE_OPERATIONS_TEST_HOOKS
-include(../../fileoperations/fileoperations.pri)
-include(../../directoryscan/directoryscan.pri)
-include(../../foldercomparison/foldercomparison.pri)
+include(../../libraries/fileoperations.pri)
 
 SOURCES += \
 	main.cpp \

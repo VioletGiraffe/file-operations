@@ -1,4 +1,4 @@
-# Single source manifest for the file-operation dialogs. The including project also needs fileoperations.pri or a library built from it.
+# Single source manifest for the file-operation dialogs, included by the library project in libraries/.
 
 HEADERS += \
 	$$PWD/cfileoperationdialog.h \

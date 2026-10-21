@@ -1,4 +1,4 @@
-# Single source manifest for folder comparison. The including project also needs directoryscan.pri.
+# Single source manifest for folder comparison, included by the library projects in libraries/.
 
 HEADERS += \
 	$$PWD/filecontentcomparison.h \

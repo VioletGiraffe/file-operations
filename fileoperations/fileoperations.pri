@@ -1,5 +1,4 @@
-# Single source manifest for the file-operation engine: a host project and the direct-source test projects include it,
-# so every source is listed exactly once.
+# Single source manifest for the file-operation engine, included by the library projects in libraries/.
 
 HEADERS += \
 	$$PWD/fileoperationtypes.h \

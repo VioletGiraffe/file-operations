@@ -10,8 +10,7 @@ mac*|linux*|freebsd{
 
 INCLUDEPATH += ../../test-utils/src/
 
-include(../../directoryscan/directoryscan.pri)
-include(../../foldercomparison/foldercomparison.pri)
+include(../../libraries/fileoperations.pri)
 
 SOURCES += \
 	filecontentcomparison_test.cpp \
