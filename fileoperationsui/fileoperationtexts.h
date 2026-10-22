@@ -19,6 +19,8 @@ enum class PromptOperation
 // single source.
 [[nodiscard]] QString fileOperationEntryKindNoun(OperationEntryKind kind);
 [[nodiscard]] QString fileOperationIssueText(const OperationIssue& issue, PromptOperation operation);
+// The issue kind as a column heading: "Already exists", "Type mismatch", ...
+[[nodiscard]] QString fileOperationIssueKindText(IssueKind kind);
 [[nodiscard]] QString fileOperationActionLabel(DecisionAction action, PromptOperation operation);
 [[nodiscard]] QString fileOperationFailedActionText(FailedAction action);
 [[nodiscard]] QString fileSystemErrorText(const CFileSystemError& error);

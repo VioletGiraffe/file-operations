@@ -95,10 +95,13 @@ public:
 	using CFileOperationDialog::drainEvents;
 	using CFileOperationDialog::renderProgress;
 
+	// Answers live requests and, row by row, the conflict plans; a plan's rows come before any execution-time request.
 	std::vector<Decision> scriptedDecisions;
 	size_t nextDecision = 0;
 	int decisionRequestsPresented = 0;
 	std::optional<IssueKind> lastRequestKind;
+	int plansPresented = 0;
+	std::vector<IssueKind> lastPlanKinds;
 
 protected:
 	Decision presentDecision(const DecisionRequest& request) override
@@ -107,6 +110,20 @@ protected:
 		lastRequestKind = request.issue.kind;
 		REQUIRE(nextDecision < scriptedDecisions.size());
 		return scriptedDecisions[nextDecision++];
+	}
+
+	std::optional<ConflictResolutions> presentConflictPlan(const ConflictPlan& plan) override
+	{
+		++plansPresented;
+		lastPlanKinds.clear();
+		ConflictResolutions resolutions;
+		for (const PlannedConflict& row : plan)
+		{
+			lastPlanKinds.push_back(row.issue.kind);
+			REQUIRE(nextDecision < scriptedDecisions.size());
+			resolutions.push_back(scriptedDecisions[nextDecision++]);
+		}
+		return resolutions;
 	}
 };
 

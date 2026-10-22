@@ -1,5 +1,6 @@
 #include "cfileoperationdialog.h"
 
+#include "cconflictlistdialog.h"
 #include "cfileoperationprompt.h"
 #include "fileoperationtexts.h"
 
@@ -335,18 +336,8 @@ Decision CFileOperationDialog::presentDecision(const DecisionRequest& request)
 
 std::optional<ConflictResolutions> CFileOperationDialog::presentConflictPlan(const ConflictPlan& plan)
 {
-	ConflictResolutions resolutions;
-	resolutions.reserve(plan.size());
-	for (const PlannedConflict& row : plan)
-	{
-		AllowedActions actions = plannableActionsFor(row.issue.kind);
-		actions.push_back(DecisionAction::Cancel);
-		const Decision decision = presentDecision(DecisionRequest{ row.issue, mv(actions), false });
-		if (decision.action == DecisionAction::Cancel)
-			return {};
-		resolutions.push_back(decision);
-	}
-	return resolutions;
+	CConflictListDialog list{ plan, _operation, this };
+	return list.ask();
 }
 
 void CFileOperationDialog::requestCancellation()

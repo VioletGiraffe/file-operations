@@ -158,7 +158,7 @@ TEST_CASE("dialog: a copy runs to completion", "[fileoperationdialog]")
 	CHECK(dialog.findChild<QPushButton*>(QStringLiteral("_btnPause"))->isHidden());
 }
 
-TEST_CASE("dialog: a replacement prompt is dispatched and answered", "[fileoperationdialog]")
+TEST_CASE("dialog: a planned replacement is dispatched and answered", "[fileoperationdialog]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -171,8 +171,9 @@ TEST_CASE("dialog: a replacement prompt is dispatched and answered", "[fileopera
 	dialog.start();
 
 	REQUIRE(pumpUntil([&dialog] { return dialog.result().has_value(); }));
-	CHECK(dialog.decisionRequestsPresented == 1);
-	CHECK(dialog.lastRequestKind == IssueKind::FileReplacement);
+	CHECK(dialog.plansPresented == 1);
+	CHECK(dialog.lastPlanKinds == std::vector{ IssueKind::FileReplacement });
+	CHECK(dialog.decisionRequestsPresented == 0);
 	CHECK(dialog.result()->status == CompletionStatus::Completed);
 	QFile replaced{ base % "/dest.bin" };
 	REQUIRE(replaced.open(QFile::ReadOnly));
@@ -194,8 +195,9 @@ TEST_CASE("dialog: cancellation invalidates an undrained decision without presen
 	// cancellation then wins the worker's decision wait (whether the request was already queued or not).
 	dialog.findChild<QTimer*>(QStringLiteral("eventTimer"))->stop();
 	dialog.requestCancellation();
-	dialog.drainEvents(); // Dispatches whatever is queued; no decision must be presented
+	dialog.drainEvents(); // Dispatches whatever is queued; no question must be presented
 	CHECK(dialog.decisionRequestsPresented == 0);
+	CHECK(dialog.plansPresented == 0);
 
 	dialog.findChild<QTimer*>(QStringLiteral("eventTimer"))->start(); // No decision remains to present; let the drain deliver completion
 	REQUIRE(pumpUntil([&dialog] { return dialog.result().has_value(); }));
@@ -274,7 +276,7 @@ TEST_CASE("dialog: background mode repositions to the injected anchor", "[fileop
 	CHECK(dialog.findChild<QPushButton*>(QStringLiteral("_btnBackground"))->isHidden());
 }
 
-TEST_CASE("dialog: the cancel confirmation blocks decision presentation until dismissed", "[fileoperationdialog]")
+TEST_CASE("dialog: the cancel confirmation blocks plan presentation until dismissed", "[fileoperationdialog]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -313,12 +315,12 @@ TEST_CASE("dialog: the cancel confirmation blocks decision presentation until di
 	dialog.findChild<QPushButton*>(QStringLiteral("_btnCancel"))->click(); // Spins the confirmation's nested loop
 
 	CHECK(drainAttemptsDuringConfirm >= 3);
-	CHECK(dialog.decisionRequestsPresented == 0); // The queued prompt never surfaced over the confirmation
+	CHECK(dialog.plansPresented == 0); // The queued plan never surfaced over the confirmation
 	CHECK(!dialog.result().has_value());
 
-	// With the confirmation declined, draining presents the pending prompt and the operation finishes.
+	// With the confirmation declined, draining presents the pending plan and the operation finishes.
 	REQUIRE(pumpUntil([&dialog] { dialog.drainEvents(); return dialog.result().has_value(); }));
-	CHECK(dialog.decisionRequestsPresented == 1);
+	CHECK(dialog.plansPresented == 1);
 	CHECK(dialog.result()->status == CompletionStatus::Completed);
 	CHECK(dialog.result()->skippedItems == 1);
 	CHECK(readFile(base % "/dest.bin") == blob(50)); // Skip left the destination untouched

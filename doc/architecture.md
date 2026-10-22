@@ -102,6 +102,11 @@ core, and formats the outcome. It may remain hidden for quick success, appear fo
 operation, and keep a completed summary visible only when it needs attention. Closing an active dialog suppresses
 later display but does not weaken job/listener lifetime requirements.
 
+`CConflictListDialog` presents the conflict plan: `CConflictListModel` shows the rows as a two-level tree (a row under
+an earlier directory row's source is its child), action buttons apply to the selected rows that allow the action, a
+Select menu picks rows by kind or by how source and destination compare, and Start is enabled only once every
+applicable row is answered. A row under a root answered Skip or Rename is disabled and resolves to nullopt.
+
 `CFileOperationPrompt` renders one decision request: only the actions the engine allows, the "remaining matching
 issues" scope where permitted, and a rename row when renaming is offered. `fileoperationtexts` holds the wording the
 dialogs and hosts share, request validation errors included.

@@ -54,6 +54,21 @@ QString fileOperationIssueText(const OperationIssue& issue, const PromptOperatio
 	return {};
 }
 
+QString fileOperationIssueKindText(const IssueKind kind)
+{
+	using enum IssueKind;
+	switch (kind)
+	{
+	case FileReplacement: return QObject::tr("Already exists");
+	case RootDirectoryMerge: return QObject::tr("Folder exists");
+	case TypeMismatch: return QObject::tr("Type mismatch");
+	case ActionFailed: return QObject::tr("Failed");
+	case ReadOnlySourceRemoval: return QObject::tr("Read-only source");
+	case UnsupportedEntry: return QObject::tr("Unsupported entry");
+	}
+	return {};
+}
+
 QString fileOperationActionLabel(const DecisionAction action, const PromptOperation operation)
 {
 	using enum DecisionAction;

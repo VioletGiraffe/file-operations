@@ -10,6 +10,7 @@ include(../../libraries/fileoperationsui.pri)
 SOURCES += \
 	main.cpp \
 	fileoperationprompttests.cpp \
+	conflictlistdialogtests.cpp \
 	fileoperationdialogtests.cpp
 
 HEADERS += \
