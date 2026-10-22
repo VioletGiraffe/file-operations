@@ -247,8 +247,9 @@ TEST_CASE("conflict planning: a rename onto a name another item takes is refused
 		REQUIRE(refused.size() == 3);
 		CHECK(!refused[1].renameTargetTakenByAnotherItem);
 		CHECK(refused[2].renameTargetTakenByAnotherItem);
-		CHECK(readFileContents(base % "/dest/src/x.bin") == patternedContents(100));
-		CHECK(readFileContents(base % "/dest/src/y.bin") == patternedContents(200));
+		// Listing order decides which file is planned first and keeps x.bin.
+		CHECK(readFileContents(base % "/dest/src/x.bin") == readFileContents(refused[1].issue.source.path.value()));
+		CHECK(readFileContents(base % "/dest/src/y.bin") == readFileContents(refused[2].issue.source.path.value()));
 	}
 
 	SECTION("taken by another root")

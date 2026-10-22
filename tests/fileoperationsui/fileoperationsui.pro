@@ -14,4 +14,5 @@ SOURCES += \
 	fileoperationdialogtests.cpp
 
 HEADERS += \
-	fileoperationguitesthelpers.h
+	fileoperationguitesthelpers.h \
+	../scriptedplananswers.h

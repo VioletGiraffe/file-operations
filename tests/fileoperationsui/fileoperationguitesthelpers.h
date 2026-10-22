@@ -8,6 +8,8 @@
 #include "fileoperations/centrypath.h"
 #include "fileoperations/fileoperationtypes.h"
 
+#include "../scriptedplananswers.h"
+
 
 // Submodule includes
 #include "compiler/compiler_warnings_control.h"
@@ -116,13 +118,11 @@ protected:
 	{
 		++plansPresented;
 		lastPlanKinds.clear();
-		ConflictResolutions resolutions;
 		for (const PlannedConflict& row : plan)
-		{
 			lastPlanKinds.push_back(row.issue.kind);
-			REQUIRE(nextDecision < scriptedDecisions.size());
-			resolutions.push_back(scriptedDecisions[nextDecision++]);
-		}
+
+		auto resolutions = answerPlanFromScript(plan, scriptedDecisions, nextDecision);
+		REQUIRE(resolutions.has_value());
 		return resolutions;
 	}
 };

@@ -753,8 +753,10 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 
 		CHECK(summary.status == CompletionStatus::Completed);
-		REQUIRE(script.seenRequests.size() == 1);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::UnsupportedEntry);
+		CHECK(script.seenRequests.empty());
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::UnsupportedEntry);
 		CHECK(!entryAbsent(base % "/src/fifo"));
 		CHECK(!entryAbsent(base % "/src"));
 		CHECK(entryAbsent(base % "/src/moved.bin"));

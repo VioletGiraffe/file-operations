@@ -1033,8 +1033,10 @@ TEST_CASE("copy executor: an Other entry is skippable", "[executor]")
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(summary.skippedItems == 1);
-	REQUIRE(script.seenRequests.size() == 1);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::UnsupportedEntry);
+	CHECK(script.seenRequests.empty());
+	REQUIRE(script.seenPlans.size() == 1);
+	REQUIRE(script.seenPlans[0].size() == 1);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::UnsupportedEntry);
 
 	CHECK(readFileContents(base % "/dest/src/real.bin") == patternedContents(400));
 	CHECK(!QFileInfo{ base % "/dest/src/pipe" }.exists());

@@ -34,4 +34,5 @@ SOURCES += \
 	inlinerenametests.cpp
 
 HEADERS += \
-	fileoperationtesthelpers.h
+	fileoperationtesthelpers.h \
+	../scriptedplananswers.h
