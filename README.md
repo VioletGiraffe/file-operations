@@ -60,7 +60,7 @@ A host builds the projects in `libraries/` and includes `libraries/fileoperation
 ## Dependencies
 
 `cpputils`, `cpp-template-utils`, `qtutils` and `thin_io`, checked out beside this repository; `config.pri` holds the
-paths. A host repository's `../global.pri` supplies the build settings when present.
+paths. A host repository's `../global.pri` supplies the compiler settings when present.
 
 ## Tests
 
