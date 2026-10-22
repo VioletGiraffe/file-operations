@@ -272,6 +272,28 @@ struct Decision
 // Rename, Retry, and Cancel are never rememberable.
 [[nodiscard]] bool isActionRememberable(IssueKind kind, DecisionAction action);
 
+// --- Up-front conflict planning ---
+// A transfer finds its conflicts before it writes anything the user has not yet decided on, and presents them as one
+// plan. Execution asks every question again and applies the stored answer where the same (source, kind) comes up.
+
+// Never ActionFailed: errors are prompted live, in every phase.
+struct PlannedConflict
+{
+	OperationIssue issue;
+	thin_io::timestamp sourceLastWrite;      // Unset when unreadable
+	thin_io::timestamp destinationLastWrite; // Unset when unreadable or there is no destination entry
+	std::optional<Decision> resolution;      // On a re-presented plan: the answer this row already has
+	// The resolution's new name is already taken by another item of this operation; the row needs a new answer.
+	bool renameTargetTakenByAnotherItem = false;
+};
+
+using ConflictPlan = std::vector<PlannedConflict>;
+// Aligned with the plan. nullopt where no answer applies: a row under a root the user skipped or renamed away.
+using ConflictResolutions = std::vector<std::optional<Decision>>;
+
+// allowedActionsFor without Retry and Cancel: Retry is only meaningful at the failing moment, and cancelling is the plan's own action.
+[[nodiscard]] AllowedActions plannableActionsFor(IssueKind kind);
+
 // --- Recursive execution result ---
 
 enum class NodeOutcome

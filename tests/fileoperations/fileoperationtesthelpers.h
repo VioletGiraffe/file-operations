@@ -37,15 +37,50 @@ RESTORE_COMPILER_WARNINGS
 // Settable via the --std-seed command-line option; see main.cpp.
 extern uint32_t g_randomSeed;
 
+// Answers the plan's unanswered rows from the script, in plan order. A RemainingMatchingIssues answer also fills every
+// later row of the same kind, as the list's bulk selection would. nullopt when the script runs out.
+inline std::optional<ConflictResolutions> answerPlanFromScript(const ConflictPlan& plan, const std::vector<Decision>& decisions, size_t& nextDecision)
+{
+	ConflictResolutions resolutions(plan.size());
+	for (size_t i = 0; i < plan.size(); ++i)
+	{
+		if (resolutions[i])
+			continue;
+		if (plan[i].resolution && !plan[i].renameTargetTakenByAnotherItem)
+		{
+			resolutions[i] = plan[i].resolution; // Answered in an earlier round
+			continue;
+		}
+		if (nextDecision >= decisions.size())
+			return {};
+
+		Decision answer = decisions[nextDecision++];
+		if (answer.scope == DecisionScope::RemainingMatchingIssues)
+		{
+			answer.scope = DecisionScope::ThisItem;
+			for (size_t j = i + 1; j < plan.size(); ++j)
+				if (plan[j].issue.kind == plan[i].issue.kind && !plan[j].resolution)
+					resolutions[j] = answer;
+		}
+		resolutions[i] = answer;
+	}
+	return resolutions;
+}
+
 // One scripted execution environment for the executor tests: pre-scripted decisions, captured requests
 // and progress, and hooks for exact-point intervention.
 struct OperationScript
 {
+	// Answers live decision requests and, through answerPlanFromScript, the conflict plans: a test scripts its answers
+	// in the order the operation asks, the planned conflicts coming before any execution-time request.
 	std::vector<Decision> decisions;
 	size_t nextDecision = 0;
 	std::vector<DecisionRequest> seenRequests;
+	std::vector<ConflictPlan> seenPlans;
 	std::vector<ProgressSnapshot> progress;
 	bool cancelInsteadOfAnswering = false;
+	// Replaces the row-by-row scripted answers for the plans, for a test that answers by row content; nullopt cancels.
+	std::function<std::optional<ConflictResolutions>(const ConflictPlan&)> answerPlan;
 	// Run mid-operation, for filesystem changes at exact execution points: at every checkpoint (before
 	// the cancellation predicate), and at every decision request before the scripted answer.
 	std::function<void()> onCheckpoint;
@@ -72,6 +107,17 @@ inline COperationExecutionContext makeScriptedContext(OperationScript& script, c
 				return {};
 			REQUIRE(script.nextDecision < script.decisions.size());
 			return script.decisions[script.nextDecision++];
+		},
+		[&script](const ConflictPlan& plan) -> std::optional<ConflictResolutions> {
+			script.seenPlans.push_back(plan);
+			if (script.cancelInsteadOfAnswering)
+				return {};
+			if (script.answerPlan)
+				return script.answerPlan(plan);
+
+			auto resolutions = answerPlanFromScript(plan, script.decisions, script.nextDecision);
+			REQUIRE(resolutions.has_value());
+			return resolutions;
 		},
 		[&script](const ProgressSnapshot& snapshot) { script.progress.push_back(snapshot); }
 	};

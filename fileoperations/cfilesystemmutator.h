@@ -56,6 +56,9 @@ struct DirectoryTraversalIdentity
 // link deliberately: its only link use is materialization of the target directory's contents.
 [[nodiscard]] std::expected<CopyableDirectoryTimes, CFileSystemError> readCopyableDirectoryTimes(const CEntryPath& source);
 
+// For display only: unset when the entry cannot be read or the filesystem keeps no last-write time. Follows links.
+[[nodiscard]] thin_io::timestamp readLastWriteTime(const CEntryPath& path);
+
 // Stateless native mutations. These own native path conversion, link-entry addressing, and platform branches;
 // callers never learn which platform primitive ran.
 class CFileSystemMutator

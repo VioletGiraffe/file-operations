@@ -8,8 +8,10 @@
 #include "filesystem_types.hpp" // thin_io: entry_identity
 
 
+#include <variant>
 #include <vector>
 
+class CNameClaims;
 class COperationExecutionContext;
 class CStagedFileCopy;
 
@@ -17,6 +19,8 @@ class CStagedFileCopy;
 // environment interaction - checkpoints, decisions, progress, diagnostics - goes through the execution context.
 // Move is rename-first: native rename is attempted at every useful owned root/subtree boundary, and only a
 // classified CrossDevice result selects the staged-copy fallback with its committed source-cleanup segment.
+// A run plans first: every root is inspected and scanned, its conflicts recorded through the context and presented
+// as one plan; execution then resolves every node again and the context applies the planned answers.
 class CTransferExecutor
 {
 public:
@@ -25,6 +29,36 @@ public:
 	[[nodiscard]] OperationSummary run(const TransferRequest& request);
 
 private:
+	// A selected root between planning and execution.
+	struct PlannedRoot
+	{
+		RootTransferIntent intent;
+		SourceNode tree; // A single-entry manifest for a non-directory root
+		bool knownCrossDevice = false;     // Move: a rename attempt classified CrossDevice
+		bool crossDevicePredicted = false; // Move, planning only: the volumes differ or cannot be compared
+	};
+
+	// --- Planning ---
+	// Writes only what a move does before its first question: the destination parent chain and the optimistic
+	// whole-root rename. Nothing else ends a root here: a Skip from a resolver is indistinguishable from the
+	// recording's internal Skip, so execution resolves every planned root again.
+
+	// The outcome alternative ends the root: moved by one rename, skipped, failed, cancelled.
+	[[nodiscard]] std::variant<PlannedRoot, NodeOutcome> planRoot(const RootTransferIntent& intent);
+
+	// Records the conflicts, presents the plan, and re-plans while the answers change destinations (renames).
+	// Leaves the context holding the final answers. False = cancelled.
+	[[nodiscard]] bool resolveConflictPlan(const std::vector<PlannedRoot>& roots);
+	[[nodiscard]] bool planAllRootConflicts(const std::vector<PlannedRoot>& roots);
+
+	// Resolves the node's destination with the context recording, and descends into a directory whose destination
+	// exists; below an absent destination nothing can collide, so nothing is inspected there. crossDevice selects the
+	// questions a copy-based move asks of its owned sources. False = cancelled.
+	[[nodiscard]] bool planSubtree(const SourceNode& node, const CEntryPath& proposedDestination, TransferNodePosition position,
+		bool destinationMayExist, bool crossDevice, CNameClaims& siblingClaims);
+	void publishPlanningProgress(const CEntryPath& currentEntry);
+
+	// --- Shared by copy and move ---
 	// What happens to the source entry after successful staged publication.
 	enum class PublishedSourceAction
 	{
@@ -47,8 +81,7 @@ private:
 	// The materializing manifest with the local ActionFailed retry policy.
 	[[nodiscard]] std::variant<SourceNode, NodeOutcome> buildManifestWithRetry(const EntrySnapshot& root);
 
-	// Totals and summary accounting for a root that ended before its manifest was built; the root entry
-	// itself is the only known item.
+	// Summary accounting for a root that ended before its manifest was built; the root entry itself is the only known item.
 	[[nodiscard]] NodeOutcome finishUnscannedRoot(NodeOutcome outcome);
 
 	// True, with the terminal failure recorded, when the destination lies inside the directory root itself.
@@ -75,12 +108,10 @@ private:
 
 	void accountSkippedSubtree(const SourceNode& node);
 	void accountAlreadySatisfiedSubtree(const SourceNode& node);
-	// A root's contribution to the aggregate totals; publishes exact totals once every root's is known.
-	void rootTotalsResolved(uint64_t bytes, size_t items);
 
 	// --- Copy ---
 
-	[[nodiscard]] NodeOutcome copyRoot(const RootTransferIntent& intent);
+	[[nodiscard]] NodeOutcome copyRoot(const PlannedRoot& root);
 
 	// Dispatches one manifest node: Other handling, resolution, file copy or directory recursion.
 	[[nodiscard]] NodeOutcome copyNode(const SourceNode& node, CEntryPath proposedDestination, TransferNodePosition position);
@@ -90,7 +121,7 @@ private:
 
 	// --- Move ---
 
-	[[nodiscard]] NodeOutcome moveRoot(const RootTransferIntent& intent);
+	[[nodiscard]] NodeOutcome moveRoot(const PlannedRoot& root);
 
 	// Dispatches one manifest node: rename-first for owned entries, then Other handling, resolution,
 	// staged transfer or directory recursion. knownCrossDevice suppresses rename attempts for the
@@ -129,7 +160,5 @@ private:
 
 	TransferKind _requestKind = TransferKind::Copy;
 	std::vector<thin_io::entry_identity> _destinationAncestorIdentities;
-	size_t _rootsWithUnresolvedTotals = 0;
-	uint64_t _knownTotalBytes = 0;
-	size_t _knownTotalItems = 0;
+	size_t _planningItemsFound = 0; // The current root's manifest size, for the Scanning snapshots of the planning walk
 };

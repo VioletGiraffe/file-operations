@@ -159,3 +159,10 @@ bool isActionRememberable(const IssueKind kind, const DecisionAction action)
 	assert_unconditional_r("Unknown IssueKind");
 	return false;
 }
+
+AllowedActions plannableActionsFor(const IssueKind kind)
+{
+	AllowedActions actions = allowedActionsFor(kind);
+	std::erase_if(actions, [](const DecisionAction action) { return action == DecisionAction::Retry || action == DecisionAction::Cancel; });
+	return actions;
+}

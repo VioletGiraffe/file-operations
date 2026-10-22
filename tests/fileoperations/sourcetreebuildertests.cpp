@@ -51,6 +51,10 @@ COperationExecutionContext scanContext(ScanScript& script)
 			FAIL("Scanning must never request a decision");
 			return {};
 		},
+		[](const ConflictPlan&) -> std::optional<ConflictResolutions> {
+			FAIL("Scanning must never present a plan");
+			return {};
+		},
 		[&script](const ProgressSnapshot& snapshot) { script.progress.push_back(snapshot); }
 	};
 }

@@ -27,6 +27,7 @@ SOURCES += \
 	transferexecutortests.cpp \
 	deleteexecutortests.cpp \
 	moveexecutortests.cpp \
+	conflictplanningtests.cpp \
 	crossvolumetests.cpp \
 	hostilenametests.cpp \
 	fileoperationjobtests.cpp \

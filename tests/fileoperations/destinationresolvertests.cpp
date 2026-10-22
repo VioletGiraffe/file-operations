@@ -77,6 +77,10 @@ COperationExecutionContext scriptedContext(ScriptedDecisions& decisions)
 		PrimaryProgressUnit::Bytes,
 		[] { return true; },
 		[&decisions](const DecisionRequest& request) { return decisions.answer(request); },
+		[](const ConflictPlan&) -> std::optional<ConflictResolutions> {
+			FAIL("The resolvers never present a plan on their own");
+			return {};
+		},
 		[](const ProgressSnapshot&) {}
 	};
 }

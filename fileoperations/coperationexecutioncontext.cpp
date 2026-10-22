@@ -1,11 +1,14 @@
 #include "coperationexecutioncontext.h"
 
+#include "cfilesystemmutator.h"
+
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
 
 
 #include <algorithm>
+#include <utility>
 
 namespace
 {
@@ -119,13 +122,14 @@ ProgressSnapshot COperationProgress::makeSnapshot() const
 }
 
 COperationExecutionContext::COperationExecutionContext(const PrimaryProgressUnit primaryUnit,
-	CheckpointCallback checkpoint, DecisionCallback decisionProvider, ProgressCallback progressPublisher)
+	CheckpointCallback checkpoint, DecisionCallback decisionProvider, PlanCallback planPresenter, ProgressCallback progressPublisher)
 	: _checkpoint{ mv(checkpoint) }
 	, _decisionProvider{ mv(decisionProvider) }
+	, _planPresenter{ mv(planPresenter) }
 	, _progressPublisher{ mv(progressPublisher) }
 	, _progress{ primaryUnit }
 {
-	assert_r(_checkpoint && _decisionProvider && _progressPublisher);
+	assert_r(_checkpoint && _decisionProvider && _planPresenter && _progressPublisher);
 }
 
 bool COperationExecutionContext::checkpoint()
@@ -141,6 +145,18 @@ std::optional<Decision> COperationExecutionContext::resolveDecision(OperationIss
 {
 	const auto kindIndex = static_cast<size_t>(issue.kind);
 	assert_debug_only(kindIndex < _rememberedDecisions.size());
+
+	if (issue.kind != IssueKind::ActionFailed)
+	{
+		if (auto planned = takePlannedDecision(issue))
+			return planned;
+		if (_recording)
+		{
+			const DecisionAction internalAnswer = issue.kind == IssueKind::RootDirectoryMerge ? DecisionAction::Merge : DecisionAction::Skip;
+			recordConflict(mv(issue));
+			return Decision{ internalAnswer };
+		}
+	}
 
 	if (remainingMatchingScopeAllowed)
 	{
@@ -169,6 +185,74 @@ std::optional<Decision> COperationExecutionContext::resolveDecision(OperationIss
 	}
 
 	return decision;
+}
+
+std::optional<Decision> COperationExecutionContext::takePlannedDecision(const OperationIssue& issue)
+{
+	const auto queue = _plannedDecisions.find(PlannedDecisionKey{ issue.source.path.value(), issue.kind });
+	if (queue == _plannedDecisions.end() || queue->second.nextRow == queue->second.rows.size())
+		return {};
+
+	const PlannedConflict& row = _plannedRows[queue->second.rows[queue->second.nextRow++]];
+	if (_recording)
+		_recordedPlan.push_back(row);
+	return row.resolution;
+}
+
+void COperationExecutionContext::recordConflict(OperationIssue issue)
+{
+	PlannedConflict row{ .issue = mv(issue) };
+	row.sourceLastWrite = readLastWriteTime(row.issue.source.path);
+	if (row.issue.destination)
+		row.destinationLastWrite = readLastWriteTime(row.issue.destination->path);
+	_recordedPlan.push_back(mv(row));
+}
+
+void COperationExecutionContext::startConflictRecording()
+{
+	assert_debug_only(!_recording && _recordedPlan.empty());
+	_recording = true;
+}
+
+ConflictPlan COperationExecutionContext::finishConflictRecording()
+{
+	assert_debug_only(_recording);
+	_recording = false;
+	return std::exchange(_recordedPlan, {});
+}
+
+void COperationExecutionContext::flagRenameTargetTaken(const CEntryPath& source)
+{
+	assert_debug_only(_recording);
+	const auto row = std::find_if(_recordedPlan.rbegin(), _recordedPlan.rend(), [&source](const PlannedConflict& candidate) {
+		return candidate.issue.source.path == source && candidate.resolution && candidate.resolution->action == DecisionAction::Rename;
+	});
+	assert_and_return_r(row != _recordedPlan.rend(), );
+	row->renameTargetTakenByAnotherItem = true;
+}
+
+void COperationExecutionContext::setPlannedDecisions(ConflictPlan plan)
+{
+	_plannedDecisions.clear();
+	_plannedRows = mv(plan);
+	for (size_t i = 0; i < _plannedRows.size(); ++i)
+	{
+		const PlannedConflict& row = _plannedRows[i];
+		if (!row.resolution)
+			continue;
+
+		const AllowedActions plannable = plannableActionsFor(row.issue.kind);
+		assert_r(std::ranges::find(plannable, row.resolution->action) != plannable.end() && row.resolution->scope == DecisionScope::ThisItem);
+		_plannedDecisions[PlannedDecisionKey{ row.issue.source.path.value(), row.issue.kind }].rows.push_back(i);
+	}
+}
+
+std::optional<ConflictResolutions> COperationExecutionContext::presentConflictPlan(const ConflictPlan& plan)
+{
+	_progress.waitStarted();
+	auto resolutions = _planPresenter(plan);
+	_progress.waitEnded();
+	return resolutions;
 }
 
 void COperationExecutionContext::publishProgress(const ProgressSnapshot& snapshot)

@@ -12,8 +12,8 @@
 #include <variant>
 
 // Everything the job delivers through processEvents(), in queue order. Repeated progress snapshots
-// coalesce to the latest; DecisionRequest and OperationSummary are ordering barriers.
-using OperationEvent = std::variant<ProgressSnapshot, DecisionRequest, OperationSummary>;
+// coalesce to the latest; DecisionRequest, ConflictPlan and OperationSummary are ordering barriers.
+using OperationEvent = std::variant<ProgressSnapshot, DecisionRequest, ConflictPlan, OperationSummary>;
 
 class CFileOperationListener
 {
@@ -48,19 +48,21 @@ public:
 	void start();
 	// Never joins. Sets the wrapper's flag under the job mutex, so no wait can evaluate its predicate
 	// between the store and blocking - a lost wakeup is unrepresentable. Also drops any undrained
-	// decision event: cancellation makes it unanswerable. Valid in any state: a cancel() before start()
+	// decision or plan event: cancellation makes it unanswerable. Valid in any state: a cancel() before start()
 	// is remembered and applied there, past the wrapper's flag reset.
 	void cancel();
 	void setPaused(bool paused);
 	// False = no unanswered decision is pending, or the supplied answer is invalid. Duplicate and late responses
 	// are therefore rejected.
-	// There are no decision IDs: the worker cannot reach a second decision while blocked on the first.
+	// There are no decision IDs: the worker cannot reach a second question while blocked on the first.
 	bool submitDecision(Decision decision);
+	// The plan's counterpart: one resolution per row, nullopt where none applies. False as for submitDecision.
+	bool submitConflictResolutions(ConflictResolutions resolutions);
 
 	[[nodiscard]] JobStatus status() const;
-	// The dialog's pre-show check: a DecisionRequest already swapped out of the queue must not be
+	// The dialog's pre-show check: a DecisionRequest or ConflictPlan already swapped out of the queue must not be
 	// presented once cancellation has invalidated it or another response has answered it.
-	[[nodiscard]] bool hasPendingDecision() const;
+	[[nodiscard]] bool hasPendingQuestion() const;
 
 	// Swaps the queued events out under the mutex, then dispatches with the mutex released: a modal
 	// prompt may enter a nested event loop and call back into the job.
@@ -69,10 +71,19 @@ public:
 private:
 	// --- Worker side. The flag reference is the wrapper's cancellation flag, passed into the payload. ---
 
+	using WorkerQuestion = std::variant<DecisionRequest, ConflictPlan>;
+	using QuestionAnswer = std::variant<Decision, ConflictResolutions>;
+
 	void runOperation(const std::atomic<bool>& cancellationRequested);
 	[[nodiscard]] bool workerCheckpoint(const std::atomic<bool>& cancellationRequested);
+	// Queues the question as a barrier event and blocks until its answer is submitted or cancellation wins (nullopt).
+	[[nodiscard]] std::optional<QuestionAnswer> workerAsk(WorkerQuestion question, const std::atomic<bool>& cancellationRequested);
 	[[nodiscard]] std::optional<Decision> workerRequestDecision(DecisionRequest request, const std::atomic<bool>& cancellationRequested);
+	[[nodiscard]] std::optional<ConflictResolutions> workerPresentPlan(ConflictPlan plan, const std::atomic<bool>& cancellationRequested);
 	void enqueueProgress(const ProgressSnapshot& snapshot);
+
+	// Stores a validated answer to the pending question and wakes the worker. Requires the mutex held; releases it.
+	bool submitAnswer(std::unique_lock<std::mutex>& lock, QuestionAnswer answer);
 
 	const FileOperationRequest _request;
 	const uint64_t _transferChunkSize;
@@ -84,8 +95,8 @@ private:
 	bool _finished = false; // Set only after the summary event is queued: Finished implies the summary is observable
 	bool _cancelledBeforeStart = false; // Write-once, consumed by start(); never read as a runtime cancellation predicate
 	bool _pauseRequested = false;
-	std::optional<DecisionRequest> _pendingRequest;
-	std::optional<Decision> _submittedDecision;
+	std::optional<WorkerQuestion> _pendingQuestion;
+	std::optional<QuestionAnswer> _submittedAnswer;
 
 	std::vector<OperationEvent> _events;
 

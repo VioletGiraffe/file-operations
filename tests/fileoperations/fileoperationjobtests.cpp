@@ -31,8 +31,10 @@ namespace
 
 #ifdef _WIN32
 constexpr NativeErrorCode crossDeviceCode = ERROR_NOT_SAME_DEVICE;
+constexpr NativeErrorCode accessDeniedCode = ERROR_ACCESS_DENIED;
 #else
 constexpr NativeErrorCode crossDeviceCode = EXDEV;
+constexpr NativeErrorCode accessDeniedCode = EACCES;
 #endif
 
 [[nodiscard]] bool waitUntil(const std::function<bool()>& condition, const std::chrono::milliseconds timeout = 10s)
@@ -72,6 +74,20 @@ struct JobDriver final : CFileOperationListener
 	void onOperationEvent(const OperationEvent& event) override
 	{
 		events.push_back(event);
+		if (const auto* plan = std::get_if<ConflictPlan>(&event))
+		{
+			if (onConflictPlan)
+				onConflictPlan(*plan);
+			if (auto resolutions = answerPlanFromScript(*plan, decisions, nextDecision))
+				job.submitConflictResolutions(std::move(*resolutions));
+			else if (autoCancelUnscripted)
+			{
+				unscriptedRequestSeen = true;
+				job.cancel();
+			}
+			return;
+		}
+
 		const auto* request = std::get_if<DecisionRequest>(&event);
 		if (!request)
 			return;
@@ -113,6 +129,15 @@ struct JobDriver final : CFileOperationListener
 		return count;
 	}
 
+	[[nodiscard]] size_t planCount() const
+	{
+		size_t count = 0;
+		for (const OperationEvent& event : events)
+			if (std::holds_alternative<ConflictPlan>(event))
+				++count;
+		return count;
+	}
+
 	[[nodiscard]] size_t summaryCount() const
 	{
 		size_t count = 0;
@@ -129,6 +154,7 @@ struct JobDriver final : CFileOperationListener
 	bool autoCancelUnscripted = true;
 	bool unscriptedRequestSeen = false;
 	std::function<void(const DecisionRequest&)> onDecisionRequest; // Runs before the scripted answer
+	std::function<void(const ConflictPlan&)> onConflictPlan;       // Likewise
 };
 
 } // namespace
@@ -148,7 +174,7 @@ TEST_CASE("job: copy runs to completion with ordered events", "[fileoperationjob
 	JobDriver driver{ job };
 
 	CHECK(job.status() == JobStatus::NotStarted);
-	CHECK(!job.hasPendingDecision());
+	CHECK(!job.hasPendingQuestion());
 	CHECK(!job.submitDecision(act(DecisionAction::Skip))); // Nothing is pending before the run
 
 	job.start();
@@ -396,35 +422,37 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 	CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
 	JobDriver driver{ job };
 
-	SECTION("a replacement prompt is delivered, answered, and honored")
+	SECTION("a planned replacement is delivered, answered, and honored")
 	{
 		driver.decisions = { act(DecisionAction::Replace) };
 		bool pendingVisibleInsideCallback = false;
-		driver.onDecisionRequest = [&](const DecisionRequest& request) {
-			pendingVisibleInsideCallback = job.hasPendingDecision(); // Callback runs with the mutex released
-			CHECK(request.issue.kind == IssueKind::FileReplacement);
+		driver.onConflictPlan = [&](const ConflictPlan& plan) {
+			pendingVisibleInsideCallback = job.hasPendingQuestion(); // Callback runs with the mutex released
+			REQUIRE(plan.size() == 1);
+			CHECK(plan[0].issue.kind == IssueKind::FileReplacement);
 		};
 
 		job.start();
 		REQUIRE(driver.pumpToCompletion());
 
 		CHECK(pendingVisibleInsideCallback);
-		CHECK(driver.decisionRequestCount() == 1);
+		CHECK(driver.planCount() == 1);
+		CHECK(driver.decisionRequestCount() == 0);
 		CHECK(driver.summary()->status == CompletionStatus::Completed);
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(700));
-		CHECK(!job.hasPendingDecision());
+		CHECK(!job.hasPendingQuestion());
 	}
 
-	SECTION("a decision request accepts exactly one answer")
+	SECTION("a question accepts exactly one answer")
 	{
 		driver.autoCancelUnscripted = false;
 		bool firstAnswerAccepted = false;
 		bool pendingAfterFirstAnswer = true;
 		bool secondAnswerAccepted = true;
-		driver.onDecisionRequest = [&](const DecisionRequest&) {
-			firstAnswerAccepted = job.submitDecision(act(DecisionAction::Replace));
-			pendingAfterFirstAnswer = job.hasPendingDecision();
-			secondAnswerAccepted = job.submitDecision(act(DecisionAction::Skip));
+		driver.onConflictPlan = [&](const ConflictPlan&) {
+			firstAnswerAccepted = job.submitConflictResolutions({ act(DecisionAction::Replace) });
+			pendingAfterFirstAnswer = job.hasPendingQuestion();
+			secondAnswerAccepted = job.submitConflictResolutions({ act(DecisionAction::Skip) });
 		};
 
 		job.start();
@@ -437,17 +465,17 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(700));
 	}
 
-	SECTION("cancellation while a decision is pending suppresses the undrained event")
+	SECTION("cancellation while a question is pending suppresses the undrained event")
 	{
 		job.start();
-		REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
 
 		job.cancel();
-		CHECK(!job.hasPendingDecision()); // Invalidated immediately, before the worker even wakes
-		CHECK(!job.submitDecision(act(DecisionAction::Replace))); // The late response is rejected
+		CHECK(!job.hasPendingQuestion()); // Invalidated immediately, before the worker even wakes
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Replace) })); // The late response is rejected
 
 		REQUIRE(driver.pumpToCompletion());
-		CHECK(driver.decisionRequestCount() == 0); // Scrubbed from the queue, never presented
+		CHECK(driver.planCount() == 0); // Scrubbed from the queue, never presented
 		CHECK(driver.summary()->status == CompletionStatus::Cancelled);
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50)); // Replacement never authorized
 	}
@@ -457,13 +485,13 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 		driver.autoCancelUnscripted = false; // This test manages the prompt lifecycle itself
 
 		job.start();
-		REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
-		job.processEvents(driver); // The DecisionRequest is now out of the queue, in the dialog's hands
-		REQUIRE(driver.decisionRequestCount() == 1);
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
+		job.processEvents(driver); // The ConflictPlan is now out of the queue, in the dialog's hands
+		REQUIRE(driver.planCount() == 1);
 
 		job.cancel();
-		CHECK(!job.hasPendingDecision()); // The dialog's pre-show check now vetoes the prompt
-		CHECK(!job.submitDecision(act(DecisionAction::Replace)));
+		CHECK(!job.hasPendingQuestion()); // The dialog's pre-show check now vetoes the prompt
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Replace) }));
 
 		REQUIRE(driver.pumpToCompletion());
 		CHECK(driver.summary()->status == CompletionStatus::Cancelled);
@@ -471,7 +499,7 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 	}
 }
 
-TEST_CASE("job: two decisions in one run are prompted and answered in order", "[fileoperationjob]")
+TEST_CASE("job: two conflicts are planned in request order and each answer lands on its row", "[fileoperationjob]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -488,28 +516,30 @@ TEST_CASE("job: two decisions in one run are prompted and answered in order", "[
 	JobDriver driver{ job };
 	driver.decisions = { act(DecisionAction::Replace), act(DecisionAction::Skip) };
 
-	QStringList promptedNames;
-	driver.onDecisionRequest = [&](const DecisionRequest& request) {
-		CHECK(request.issue.kind == IssueKind::FileReplacement);
-		promptedNames.push_back(request.issue.source.path.name());
+	QStringList plannedNames;
+	driver.onConflictPlan = [&](const ConflictPlan& plan) {
+		for (const PlannedConflict& row : plan)
+		{
+			CHECK(row.issue.kind == IssueKind::FileReplacement);
+			plannedNames.push_back(row.issue.source.path.name());
+		}
 	};
 
 	job.start();
 	REQUIRE(driver.pumpToCompletion());
 
-	// The second prompt exists only because the worker resumed from the first, and each answer landed on
-	// the file that asked for it.
-	CHECK(promptedNames.join(QLatin1Char(',')).toStdString() == "one.bin,two.bin");
-	CHECK(driver.decisionRequestCount() == 2);
+	CHECK(plannedNames.join(QLatin1Char(',')).toStdString() == "one.bin,two.bin");
+	CHECK(driver.planCount() == 1);
+	CHECK(driver.decisionRequestCount() == 0);
 	CHECK(driver.summary()->status == CompletionStatus::Completed);
 	CHECK(driver.summary()->completedItems == 1);
 	CHECK(driver.summary()->skippedItems == 1);
 	CHECK(readFileContents(base % "/dest/one.bin") == patternedContents(700));
 	CHECK(readFileContents(base % "/dest/two.bin") == QByteArray{ "OLD2" });
-	CHECK(!job.hasPendingDecision());
+	CHECK(!job.hasPendingQuestion());
 }
 
-TEST_CASE("job: a pause requested while a decision is pending holds the answered worker", "[fileoperationjob]")
+TEST_CASE("job: a pause requested while a question is pending holds the answered worker", "[fileoperationjob]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -524,12 +554,12 @@ TEST_CASE("job: a pause requested while a decision is pending holds the answered
 	driver.autoCancelUnscripted = false; // Answered here, before the queued request event is ever drained
 
 	job.start();
-	REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
+	REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
 
-	// The decision wait does not observe the pause: the answer is accepted, and the pause then holds the
+	// The question wait does not observe the pause: the answer is accepted, and the pause then holds the
 	// worker at the checkpoint that follows.
 	job.setPaused(true);
-	REQUIRE(job.submitDecision(act(DecisionAction::Replace)));
+	REQUIRE(job.submitConflictResolutions({ act(DecisionAction::Replace) }));
 
 	std::this_thread::sleep_for(100ms);
 	CHECK(hooks.arrivalCount(Point::StagedCopy_WriteStaging_Native) == 0); // One-sided: no chunk may stream while paused
@@ -542,31 +572,62 @@ TEST_CASE("job: a pause requested while a decision is pending holds the answered
 	CHECK(readFileContents(base % "/dest.bin") == patternedContents(300'000));
 }
 
-TEST_CASE("job: a decision outside the delivered request is rejected", "[fileoperationjob]")
+TEST_CASE("job: an answer outside the delivered question is rejected", "[fileoperationjob]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
 	const QString base = tempDir.path();
 
 	writeTestFile(base % "/src.bin", patternedContents(700));
-	writeTestFile(base % "/dest.bin", patternedContents(50));
 
-	CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
-	job.start();
-	REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
+	SECTION("a plan row")
+	{
+		writeTestFile(base % "/dest.bin", patternedContents(50));
 
-	// FileReplacement never offers Merge; the rejection logs a recoverable assert and answers nothing.
-	CHECK(!job.submitDecision(act(DecisionAction::Merge)));
-	CHECK(job.hasPendingDecision()); // The prompt is still live and answerable
+		CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
+		job.start();
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
 
-	CHECK(job.submitDecision(act(DecisionAction::Skip)));
+		// FileReplacement never offers Merge, a plan takes no RemainingMatchingIssues scope and exactly one answer per
+		// row; every rejection logs a recoverable assert and answers nothing.
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Merge) }));
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Skip, DecisionScope::RemainingMatchingIssues) }));
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Skip), act(DecisionAction::Skip) }));
+		CHECK(!job.submitDecision(act(DecisionAction::Skip))); // The pending question is a plan, not a request
+		CHECK(job.hasPendingQuestion()); // The plan is still live and answerable
 
-	JobDriver driver{ job };
-	driver.autoCancelUnscripted = false; // The queued request event is already answered; its dispatch is not a hang
-	REQUIRE(driver.pumpToCompletion());
-	CHECK(driver.summary()->status == CompletionStatus::Completed);
-	CHECK(driver.summary()->skippedItems == 1);
-	CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
+		CHECK(job.submitConflictResolutions({ act(DecisionAction::Skip) }));
+
+		JobDriver driver{ job };
+		driver.autoCancelUnscripted = false; // The queued plan event is already answered; its dispatch is not a hang
+		REQUIRE(driver.pumpToCompletion());
+		CHECK(driver.summary()->status == CompletionStatus::Completed);
+		CHECK(driver.summary()->skippedItems == 1);
+		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
+	}
+
+	SECTION("a live request")
+	{
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::StagedCopy_CreateStaging_Native, accessDeniedCode); // An ActionFailed prompt: Retry, Skip, Cancel
+
+		CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
+		job.start();
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
+
+		CHECK(!job.submitDecision(act(DecisionAction::Replace)));
+		CHECK(!job.submitConflictResolutions({ act(DecisionAction::Skip) })); // The pending question is a request, not a plan
+		CHECK(job.hasPendingQuestion());
+
+		CHECK(job.submitDecision(act(DecisionAction::Skip)));
+
+		JobDriver driver{ job };
+		driver.autoCancelUnscripted = false;
+		REQUIRE(driver.pumpToCompletion());
+		CHECK(driver.summary()->status == CompletionStatus::Completed);
+		CHECK(driver.summary()->skippedItems == 1);
+		CHECK(entryAbsent(base % "/dest.bin"));
+	}
 }
 
 TEST_CASE("job: progress after a decision barrier is not merged into earlier snapshots", "[fileoperationjob]")
@@ -578,7 +639,7 @@ TEST_CASE("job: progress after a decision barrier is not merged into earlier sna
 	writeTestFile(base % "/src1.bin", patternedContents(500));
 	writeTestFile(base % "/src2.bin", patternedContents(300'000));
 	REQUIRE(QDir{}.mkpath(base % "/dest"));
-	writeTestFile(base % "/dest/src1.bin", patternedContents(10)); // Collides: the prompt is the barrier
+	writeTestFile(base % "/dest/src1.bin", patternedContents(10)); // Collides: the plan is the barrier
 
 	CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src1.bin", base % "/src2.bin" },
 		DestinationIntent::IntoDirectory, base % "/dest"), 1024 };
@@ -590,22 +651,22 @@ TEST_CASE("job: progress after a decision barrier is not merged into earlier sna
 	CHECK(driver.summary()->status == CompletionStatus::Completed);
 	CHECK(driver.summary()->completedItems == 2);
 
-	size_t requestIndex = driver.events.size();
+	size_t planIndex = driver.events.size();
 	for (size_t i = 0; i < driver.events.size(); ++i)
 	{
-		if (std::holds_alternative<DecisionRequest>(driver.events[i]))
+		if (std::holds_alternative<ConflictPlan>(driver.events[i]))
 		{
-			requestIndex = i;
+			planIndex = i;
 			break;
 		}
 	}
-	REQUIRE(requestIndex < driver.events.size());
+	REQUIRE(planIndex < driver.events.size());
 
-	// The second file's progress must appear as entries after the barrier, never coalesced across it.
-	bool progressAfterRequest = false;
-	for (size_t i = requestIndex + 1; i < driver.events.size(); ++i)
-		progressAfterRequest = progressAfterRequest || std::holds_alternative<ProgressSnapshot>(driver.events[i]);
-	CHECK(progressAfterRequest);
+	// The files' progress must appear as entries after the barrier, never coalesced into the scanning snapshots before it.
+	bool progressAfterPlan = false;
+	for (size_t i = planIndex + 1; i < driver.events.size(); ++i)
+		progressAfterPlan = progressAfterPlan || std::holds_alternative<ProgressSnapshot>(driver.events[i]);
+	CHECK(progressAfterPlan);
 }
 
 TEST_CASE("job: progress coalescing and barrier ordering", "[fileoperationjob]")
@@ -614,11 +675,13 @@ TEST_CASE("job: progress coalescing and barrier ordering", "[fileoperationjob]")
 	REQUIRE(tempDir.isValid());
 	const QString base = tempDir.path();
 
-	// Two roots in request order: the first streams progress, the second collides and prompts.
+	// Two roots in request order: the first streams progress, the second fails to stage and prompts.
 	writeTestFile(base % "/first.bin", patternedContents(100'000));
 	writeTestFile(base % "/second.bin", patternedContents(300));
 	REQUIRE(QDir{}.mkpath(base % "/dest"));
-	writeTestFile(base % "/dest/second.bin", patternedContents(40));
+
+	CFaultHookScope hooks;
+	hooks.forceNativeError(Point::StagedCopy_CreateStaging_Native, accessDeniedCode, 1, 1); // The second file's staging
 
 	CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/first.bin", base % "/second.bin" },
 		DestinationIntent::IntoDirectory, base % "/dest"), 1024 };
@@ -626,10 +689,10 @@ TEST_CASE("job: progress coalescing and barrier ordering", "[fileoperationjob]")
 	driver.autoCancelUnscripted = false;
 
 	job.start();
-	REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
+	REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
 
-	// Undrained queue at the prompt: the first file's many snapshots coalesced into one, and the decision
-	// barrier was appended after it - progress published before a barrier stays before it.
+	// Undrained queue at the prompt: the scanning and the first file's many snapshots coalesced into one, and the
+	// decision barrier was appended after it - progress published before a barrier stays before it.
 	job.processEvents(driver);
 	REQUIRE(driver.events.size() == 2);
 	const auto* coalesced = std::get_if<ProgressSnapshot>(&driver.events[0]);
@@ -647,7 +710,7 @@ TEST_CASE("job: progress coalescing and barrier ordering", "[fileoperationjob]")
 	CHECK(driver.summary()->completedItems == 1);
 	CHECK(driver.summary()->skippedItems == 1);
 	CHECK(readFileContents(base % "/dest/first.bin") == patternedContents(100'000));
-	CHECK(readFileContents(base % "/dest/second.bin") == patternedContents(40));
+	CHECK(entryAbsent(base % "/dest/second.bin"));
 }
 
 TEST_CASE("job: cancellation requested before start takes effect at the first checkpoint", "[fileoperationjob]")
@@ -704,7 +767,7 @@ TEST_CASE("job: the destructor unblocks a worker waiting on a decision", "[fileo
 		CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
 		job.start();
 		// Never pumped, never answered: the worker sits inside the decision wait when the job dies.
-		REQUIRE(waitUntil([&job] { return job.hasPendingDecision(); }));
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
 	}
 
 	// The destructor's cancellation woke the decision wait and joined; reaching this line is the hang proof.

@@ -443,6 +443,13 @@ std::expected<CopyableDirectoryTimes, CFileSystemError> readCopyableDirectoryTim
 	return result;
 }
 
+thin_io::timestamp readLastWriteTime(const CEntryPath& path)
+{
+	const auto native = thinIoPath(path);
+	const auto times = thin_io::get_times(nativeCStr(native));
+	return times ? times->last_write : thin_io::timestamp{};
+}
+
 std::expected<void, CFileSystemError> CFileSystemMutator::renameEntry(const CEntryPath& source, const CEntryPath& destination, const ReplacementMode replacement)
 {
 	using OperationTestHooks::Point;

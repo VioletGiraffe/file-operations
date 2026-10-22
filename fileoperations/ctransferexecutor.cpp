@@ -7,10 +7,56 @@
 
 // Submodule includes
 #include "assert/advanced_assert.h"
+#include "compiler/compiler_warnings_control.h"
 #include "lang/utils.hpp" // mv()
+#include "qtcore_helpers/qstring_hash.hpp" // qtutils
 
+
+DISABLE_COMPILER_WARNINGS
+#include <3rdparty/ankerl/unordered_dense.h>
+RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
+
+// The final names planned into one destination directory. Two items planned onto one name is a collision execution
+// would prompt for; where a rename caused it, the planner refuses that rename instead.
+class CNameClaims
+{
+public:
+	// Returns the source whose rename is refused: this one, or the earlier claimant if it was the one renamed.
+	// nullopt: no clash, or a clash of two unrenamed names, which execution prompts for.
+	[[nodiscard]] std::optional<CEntryPath> claim(const CEntryPath& source, const QString& finalName)
+	{
+		const bool renamed = finalName != source.name();
+		const auto [claimed, inserted] = _claims.try_emplace(foldedName(finalName), Claim{ source, renamed });
+		if (inserted)
+			return {};
+		if (renamed)
+			return source;
+		if (claimed->second.renamed)
+			return claimed->second.source;
+		return {};
+	}
+
+private:
+	// Folded where the mainstream filesystems fold case; a wrong guess for a filesystem is one live prompt at execution.
+	[[nodiscard]] static QString foldedName(const QString& name)
+	{
+#if defined(_WIN32) || defined(__APPLE__)
+		return name.toCaseFolded();
+#else
+		return name;
+#endif
+	}
+
+	struct Claim
+	{
+		CEntryPath source;
+		bool renamed;
+	};
+
+	ankerl::unordered_dense::map<QString, Claim, QStringHash, std::equal_to<>> _claims;
+};
 
 namespace
 {
@@ -37,6 +83,44 @@ std::vector<thin_io::entry_identity> destinationAncestorIdentities(const Destina
 	}
 }
 
+// False only when both volumes are known and equal: an unknown is treated as cross-device, which costs unused
+// plan rows, where the opposite guess costs a live prompt.
+bool crossDevicePredicted(const CEntryPath& source, const CEntryPath& destinationParent)
+{
+	const auto sourceIdentity = readEntryIdentity(source, thin_io::link_behavior::do_not_follow);
+	const auto destinationIdentity = readEntryIdentity(destinationParent, thin_io::link_behavior::follow);
+	const bool bothKnown = sourceIdentity && *sourceIdentity && destinationIdentity && *destinationIdentity;
+	return !bothKnown || (**sourceIdentity).filesystem != (**destinationIdentity).filesystem;
+}
+
+bool isDirectoryLike(const OperationEntryKind kind) noexcept
+{
+	return kind == OperationEntryKind::Directory || kind == OperationEntryKind::DirectoryLink;
+}
+
+bool isFileLike(const OperationEntryKind kind) noexcept
+{
+	return kind == OperationEntryKind::RegularFile || kind == OperationEntryKind::FileLink;
+}
+
+SourceNode singleEntryManifest(EntrySnapshot entry)
+{
+	SourceNode leaf{ .entry = mv(entry) };
+	leaf.subtreeBytes = leaf.entry.size;
+	leaf.subtreeItems = 1;
+	return leaf;
+}
+
+bool hasRenameAnswer(const ConflictPlan& plan)
+{
+	return std::ranges::any_of(plan, [](const PlannedConflict& row) { return row.resolution && row.resolution->action == DecisionAction::Rename; });
+}
+
+bool hasUnansweredRow(const ConflictPlan& plan)
+{
+	return std::ranges::any_of(plan, [](const PlannedConflict& row) { return !row.resolution || row.renameTargetTakenByAnotherItem; });
+}
+
 } // namespace
 
 CTransferExecutor::CTransferExecutor(COperationExecutionContext& context, const uint64_t transferChunkSize) noexcept
@@ -51,25 +135,215 @@ OperationSummary CTransferExecutor::run(const TransferRequest& request)
 	_requestKind = request.kind;
 	_destinationAncestorIdentities = destinationAncestorIdentities(request.destination);
 
-	const auto intents = rootTransferIntents(request);
-	_rootsWithUnresolvedTotals = intents.size();
-
-	bool anyCancelled = false;
+	std::vector<PlannedRoot> roots;
+	size_t rootsMovedByRename = 0;
 	bool anyFailed = false;
-	for (const RootTransferIntent& intent : intents)
+	for (const RootTransferIntent& intent : rootTransferIntents(request))
 	{
-		const NodeOutcome outcome = _requestKind == TransferKind::Move ? moveRoot(intent) : copyRoot(intent);
-		if (outcome == NodeOutcome::Cancelled)
+		auto planned = planRoot(intent);
+		if (auto* root = std::get_if<PlannedRoot>(&planned))
 		{
-			anyCancelled = true;
-			break; // Cancellation stops further traversal; remaining roots stay untouched
+			roots.push_back(mv(*root));
+			continue;
 		}
+
+		const NodeOutcome outcome = finishUnscannedRoot(std::get<NodeOutcome>(planned));
+		if (outcome == NodeOutcome::Cancelled)
+			return _context.makeSummary(CompletionStatus::Cancelled); // Remaining roots stay untouched
+		anyFailed = anyFailed || outcome == NodeOutcome::Failed;
+		rootsMovedByRename += outcome == NodeOutcome::Completed ? 1 : 0;
+	}
+
+	if (!resolveConflictPlan(roots))
+		return _context.makeSummary(CompletionStatus::Cancelled);
+
+	uint64_t totalBytes = 0;
+	size_t totalItems = rootsMovedByRename;
+	for (const PlannedRoot& root : roots)
+	{
+		totalBytes += root.tree.subtreeBytes;
+		totalItems += root.tree.subtreeItems;
+	}
+	_context.progress().setTotals(totalBytes, totalItems);
+	_context.publishProgressSnapshot(); // Working, with exact totals from here on
+
+	for (const PlannedRoot& root : roots)
+	{
+		const NodeOutcome outcome = _requestKind == TransferKind::Move ? moveRoot(root) : copyRoot(root);
+		if (outcome == NodeOutcome::Cancelled)
+			return _context.makeSummary(CompletionStatus::Cancelled);
 		anyFailed = anyFailed || outcome == NodeOutcome::Failed;
 	}
 
-	const CompletionStatus status = anyCancelled ? CompletionStatus::Cancelled
-		: anyFailed ? CompletionStatus::Failed : CompletionStatus::Completed;
-	return _context.makeSummary(status);
+	return _context.makeSummary(anyFailed ? CompletionStatus::Failed : CompletionStatus::Completed);
+}
+
+// --- Planning ---
+
+std::variant<CTransferExecutor::PlannedRoot, NodeOutcome> CTransferExecutor::planRoot(const RootTransferIntent& intent)
+{
+	if (!_context.checkpoint())
+		return NodeOutcome::Cancelled;
+
+	auto rootEntry = inspectSourceRoot(intent.source);
+	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&rootEntry))
+		return *endedOutcome;
+	EntrySnapshot& root = std::get<EntrySnapshot>(rootEntry);
+
+	// Before a move creates the parent chain: it would be created inside the source.
+	if (root.kind == OperationEntryKind::Directory && refuseDestinationInsideSource(root, intent.proposedDestination))
+		return NodeOutcome::Failed;
+
+	bool knownCrossDevice = false;
+	bool predictedCrossDevice = false;
+	if (_requestKind == TransferKind::Move)
+	{
+		if (const auto outcome = ensureDestinationParentExistsWithPolicy(root, intent.proposedDestination))
+			return *outcome;
+
+		// The optimistic whole-root rename. RequireAbsent cannot clobber anything.
+		// A case-only respell succeeds here through the primitive's exclusive temporary-sibling path, so resolution's
+		// silent same-object handling never sees one.
+		auto renamed = renameEntryWithPolicy(root, intent.proposedDestination, ReplacementMode::RequireAbsent);
+		if (const auto* outcome = std::get_if<NodeOutcome>(&renamed))
+			return *outcome;
+		knownCrossDevice = std::get<RenameBlock>(renamed) == RenameBlock::CrossDevice;
+		if (!knownCrossDevice)
+		{
+			const CEntryPath& destination = intent.proposedDestination;
+			predictedCrossDevice = crossDevicePredicted(root.path, destination.isRoot() ? destination : destination.parent());
+		}
+	}
+
+	if (!isDirectoryLike(root.kind))
+		return PlannedRoot{ intent, singleEntryManifest(mv(root)), knownCrossDevice, predictedCrossDevice };
+
+	auto built = buildManifestWithRetry(root);
+	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&built))
+		return *endedOutcome;
+	return PlannedRoot{ intent, mv(std::get<SourceNode>(built)), knownCrossDevice, predictedCrossDevice };
+}
+
+bool CTransferExecutor::resolveConflictPlan(const std::vector<PlannedRoot>& roots)
+{
+	ConflictPlan plan;
+	for (;;)
+	{
+		_context.startConflictRecording();
+		const bool completed = planAllRootConflicts(roots);
+		plan = _context.finishConflictRecording();
+		if (!completed)
+			return false;
+		if (!hasUnansweredRow(plan))
+			break;
+
+		auto resolutions = _context.presentConflictPlan(plan);
+		if (!resolutions)
+			return false;
+
+		assert_r(resolutions->size() == plan.size());
+		for (size_t i = 0; i < plan.size() && i < resolutions->size(); ++i)
+		{
+			plan[i].resolution = mv((*resolutions)[i]);
+			plan[i].renameTargetTakenByAnotherItem = false;
+		}
+		_context.setPlannedDecisions(plan);
+
+		// Only a rename changes a destination: without one, nothing below the answered rows can have changed.
+		if (!hasRenameAnswer(plan))
+			return true;
+	}
+
+	_context.setPlannedDecisions(mv(plan)); // The recording consumed the answers; arm them again for execution
+	return true;
+}
+
+bool CTransferExecutor::planAllRootConflicts(const std::vector<PlannedRoot>& roots)
+{
+	CNameClaims rootNameClaims;
+	for (const PlannedRoot& root : roots)
+	{
+		_planningItemsFound = root.tree.subtreeItems;
+		if (!planSubtree(root.tree, root.intent.proposedDestination, TransferNodePosition::SelectedRoot, true,
+			root.knownCrossDevice || root.crossDevicePredicted, rootNameClaims))
+			return false;
+	}
+	return true;
+}
+
+bool CTransferExecutor::planSubtree(const SourceNode& node, const CEntryPath& proposedDestination, const TransferNodePosition position,
+	const bool destinationMayExist, const bool crossDevice, CNameClaims& siblingClaims)
+{
+	if (!_context.checkpoint())
+		return false;
+	publishPlanningProgress(node.entry.path);
+
+	if (node.entry.kind == OperationEntryKind::Other)
+	{
+		// A copy never streams it. A move renames it where the destination is free on the same volume; everywhere
+		// else it is the same question.
+		bool unsupported = _requestKind == TransferKind::Copy || crossDevice;
+		if (!unsupported && destinationMayExist)
+		{
+			const auto destination = inspectEntry(proposedDestination);
+			unsupported = destination && destination->has_value();
+		}
+		if (unsupported)
+		{
+			const auto decision = _context.resolveDecision(OperationIssue{ IssueKind::UnsupportedEntry, node.entry, {}, {} });
+			return decision && decision->action != DecisionAction::Cancel;
+		}
+		return true;
+	}
+
+	DestinationChoice choice = UseDestination{ proposedDestination, ReplacementMode::RequireAbsent };
+	if (destinationMayExist)
+	{
+		choice = isFileLike(node.entry.kind)
+			? resolveFileDestination(_context, node.entry, proposedDestination)
+			: resolveDirectoryDestination(_context, node.entry, proposedDestination, position);
+	}
+	if (std::holds_alternative<CancelOperation>(choice))
+		return false;
+	if (std::holds_alternative<AlreadySatisfied>(choice))
+		return true;
+
+	// Asked whatever the collision answer turns out to be: the copy-based move removes the source only after
+	// publication, and that removal is the question.
+	if (_requestKind == TransferKind::Move && crossDevice && node.ownership == SourceOwnership::Owned && node.entry.kind == OperationEntryKind::RegularFile)
+	{
+		const auto preflight = resolveMoveReadOnlyPreflight(node.entry);
+		if (const auto* outcome = std::get_if<NodeOutcome>(&preflight); outcome && *outcome == NodeOutcome::Cancelled)
+			return false;
+	}
+
+	if (std::holds_alternative<SkipNode>(choice))
+		return true;
+
+	const auto* merge = std::get_if<MergeDirectory>(&choice);
+	const CEntryPath& finalDestination = merge ? merge->path : std::get<UseDestination>(choice).path;
+	if (const auto refusedRename = siblingClaims.claim(node.entry.path, finalDestination.name()))
+		_context.flagRenameTargetTaken(*refusedRename);
+
+	if (!isDirectoryLike(node.entry.kind))
+		return true;
+
+	CNameClaims childClaims;
+	for (const SourceNode& child : node.children)
+	{
+		if (!planSubtree(child, finalDestination.child(child.entry.path.name()), TransferNodePosition::Descendant, merge != nullptr, crossDevice, childClaims))
+			return false;
+	}
+	return true;
+}
+
+void CTransferExecutor::publishPlanningProgress(const CEntryPath& currentEntry)
+{
+	ProgressSnapshot snapshot;
+	snapshot.phase = OperationPhase::Scanning;
+	snapshot.currentEntry = currentEntry;
+	snapshot.itemsProcessed = _planningItemsFound;
+	_context.publishProgress(snapshot);
 }
 
 std::variant<EntrySnapshot, NodeOutcome> CTransferExecutor::inspectSourceRoot(const CEntryPath& source)
@@ -119,23 +393,19 @@ NodeOutcome CTransferExecutor::finishUnscannedRoot(const NodeOutcome outcome)
 {
 	switch (outcome)
 	{
-	case NodeOutcome::Completed: // Renamed wholesale; totals resolve first so the published snapshot carries them when this was the last root
+	case NodeOutcome::Completed: // Renamed wholesale
 		_context.addCompletedItems(1);
 		_context.progress().itemCompleted();
-		rootTotalsResolved(0, 1);
 		_context.publishProgressSnapshot();
 		break;
 	case NodeOutcome::Skipped:
 		_context.addSkippedItems(1);
-		rootTotalsResolved(0, 0);
 		break;
 	case NodeOutcome::AlreadySatisfied:
 		_context.addAlreadySatisfiedItems(1);
-		rootTotalsResolved(0, 0);
 		break;
 	default: // A Failed root has already recorded its terminal diagnostic
 		assert_debug_only(outcome == NodeOutcome::Cancelled || outcome == NodeOutcome::Failed);
-		rootTotalsResolved(0, 0);
 		break;
 	}
 	return outcome;
@@ -206,54 +476,25 @@ std::optional<NodeOutcome> CTransferExecutor::ensureDestinationParentExistsWithP
 
 // --- Copy ---
 
-NodeOutcome CTransferExecutor::copyRoot(const RootTransferIntent& intent)
+NodeOutcome CTransferExecutor::copyRoot(const PlannedRoot& root)
 {
-	if (!_context.checkpoint())
-		return finishUnscannedRoot(NodeOutcome::Cancelled);
-
-	auto rootEntry = inspectSourceRoot(intent.source);
-	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&rootEntry))
-		return finishUnscannedRoot(*endedOutcome);
-	EntrySnapshot& root = std::get<EntrySnapshot>(rootEntry);
-
-	const bool directoryLike = root.kind == OperationEntryKind::Directory || root.kind == OperationEntryKind::DirectoryLink;
-	if (!directoryLike)
+	const SourceNode& tree = root.tree;
+	const CEntryPath& proposedDestination = root.intent.proposedDestination;
+	if (isDirectoryLike(tree.entry.kind))
 	{
-		const bool fileLike = root.kind == OperationEntryKind::RegularFile || root.kind == OperationEntryKind::FileLink;
-		if (fileLike)
-		{
-			if (const auto outcome = ensureDestinationParentExistsWithPolicy(root, intent.proposedDestination))
-				return finishUnscannedRoot(*outcome);
-		}
-
-		// A single-entry manifest; Other and file kinds route through the ordinary node dispatch.
-		SourceNode leaf{ .entry = mv(root) };
-		leaf.subtreeBytes = leaf.entry.size;
-		leaf.subtreeItems = 1;
-		rootTotalsResolved(leaf.subtreeBytes, 1);
-		return copyNode(leaf, intent.proposedDestination, TransferNodePosition::SelectedRoot);
+		if (!_context.checkpoint())
+			return NodeOutcome::Cancelled;
+		return runDirectoryNode(tree, TransferNodePosition::SelectedRoot,
+			resolveDirectoryDestination(_context, tree.entry, proposedDestination, TransferNodePosition::SelectedRoot), false);
 	}
 
-	if (root.kind == OperationEntryKind::Directory && refuseDestinationInsideSource(root, intent.proposedDestination))
-		return finishUnscannedRoot(NodeOutcome::Failed);
-
-	// Root-first resolution: a root skipped at its collision is never scanned.
-	DestinationChoice choice = resolveDirectoryDestination(_context, root, intent.proposedDestination, TransferNodePosition::SelectedRoot);
-	if (std::holds_alternative<SkipNode>(choice))
-		return finishUnscannedRoot(NodeOutcome::Skipped);
-	if (std::holds_alternative<CancelOperation>(choice))
-		return finishUnscannedRoot(NodeOutcome::Cancelled);
-	if (std::holds_alternative<AlreadySatisfied>(choice))
-		return finishUnscannedRoot(NodeOutcome::AlreadySatisfied);
-
-	auto built = buildManifestWithRetry(root);
-	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&built))
-		return finishUnscannedRoot(*endedOutcome);
-	SourceNode& tree = std::get<SourceNode>(built);
-
-	rootTotalsResolved(tree.subtreeBytes, tree.subtreeItems);
-	_context.publishProgressSnapshot(); // Back to Working, with totals possibly exact from here on
-	return runDirectoryNode(tree, TransferNodePosition::SelectedRoot, mv(choice), false);
+	if (isFileLike(tree.entry.kind))
+	{
+		if (const auto outcome = ensureDestinationParentExistsWithPolicy(tree.entry, proposedDestination))
+			return finishUnscannedRoot(*outcome);
+	}
+	// Other and file kinds route through the ordinary node dispatch.
+	return copyNode(tree, proposedDestination, TransferNodePosition::SelectedRoot);
 }
 
 NodeOutcome CTransferExecutor::copyNode(const SourceNode& node, CEntryPath proposedDestination, const TransferNodePosition position)
@@ -392,62 +633,33 @@ NodeOutcome CTransferExecutor::copyDirectoryContents(const SourceNode& node, con
 
 // --- Move ---
 
-NodeOutcome CTransferExecutor::moveRoot(const RootTransferIntent& intent)
+NodeOutcome CTransferExecutor::moveRoot(const PlannedRoot& root)
 {
-	if (!_context.checkpoint())
-		return finishUnscannedRoot(NodeOutcome::Cancelled);
+	const SourceNode& tree = root.tree;
+	bool knownCrossDevice = root.knownCrossDevice;
+	if (!isDirectoryLike(tree.entry.kind))
+		return moveNode(tree, root.intent.proposedDestination, TransferNodePosition::SelectedRoot, knownCrossDevice);
 
-	auto rootEntry = inspectSourceRoot(intent.source);
-	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&rootEntry))
-		return finishUnscannedRoot(*endedOutcome);
-	EntrySnapshot& root = std::get<EntrySnapshot>(rootEntry);
-
-	// Before the parent chain is created: it would be created inside the source.
-	if (root.kind == OperationEntryKind::Directory && refuseDestinationInsideSource(root, intent.proposedDestination))
-		return finishUnscannedRoot(NodeOutcome::Failed);
-
-	if (const auto outcome = ensureDestinationParentExistsWithPolicy(root, intent.proposedDestination))
-		return finishUnscannedRoot(*outcome);
-
-	const bool directoryLike = root.kind == OperationEntryKind::Directory || root.kind == OperationEntryKind::DirectoryLink;
-	if (!directoryLike)
-	{
-		SourceNode leaf{ .entry = mv(root) };
-		leaf.subtreeBytes = leaf.entry.size;
-		leaf.subtreeItems = 1;
-		rootTotalsResolved(leaf.subtreeBytes, 1);
-		return moveNode(leaf, intent.proposedDestination, TransferNodePosition::SelectedRoot, false);
-	}
-
-	// Optimistic whole-root rename before resolution and scanning. RequireAbsent cannot clobber anything,
-	// and a case-only respell succeeds right here through the primitive's exclusive temporary-sibling path -
-	// which is why resolution's silent same-object handling never swallows one.
-	auto renamed = renameEntryWithPolicy(root, intent.proposedDestination, ReplacementMode::RequireAbsent);
-	if (const auto* outcome = std::get_if<NodeOutcome>(&renamed))
-		return finishUnscannedRoot(*outcome);
-	bool knownCrossDevice = std::get<RenameBlock>(renamed) == RenameBlock::CrossDevice;
-
-	// Root-first resolution; a rename decision loops back so the respelled target gets its own rename attempt.
-	CEntryPath proposedDestination = intent.proposedDestination;
+	// Planning already tried the whole-root rename. A rename decision loops back so the respelled target gets its own attempt.
+	CEntryPath proposedDestination = root.intent.proposedDestination;
 	for (;;)
 	{
 		if (!_context.checkpoint())
-			return finishUnscannedRoot(NodeOutcome::Cancelled);
+			return NodeOutcome::Cancelled;
 
-		DestinationChoice choice = resolveDirectoryDestination(_context, root, proposedDestination, TransferNodePosition::SelectedRoot);
-		if (std::holds_alternative<SkipNode>(choice))
-			return finishUnscannedRoot(NodeOutcome::Skipped);
-		if (std::holds_alternative<CancelOperation>(choice))
-			return finishUnscannedRoot(NodeOutcome::Cancelled);
-		if (std::holds_alternative<AlreadySatisfied>(choice))
-			return finishUnscannedRoot(NodeOutcome::AlreadySatisfied);
-
+		DestinationChoice choice = resolveDirectoryDestination(_context, tree.entry, proposedDestination, TransferNodePosition::SelectedRoot);
 		if (const auto* use = std::get_if<UseDestination>(&choice); use && !knownCrossDevice)
 		{
-			auto renamedToResolved = renameEntryWithPolicy(root, use->path, use->replacement);
-			if (const auto* outcome = std::get_if<NodeOutcome>(&renamedToResolved))
-				return finishUnscannedRoot(*outcome);
-			if (std::get<RenameBlock>(renamedToResolved) == RenameBlock::CrossDevice)
+			auto renamed = renameEntryWithPolicy(tree.entry, use->path, use->replacement);
+			if (const auto* outcome = std::get_if<NodeOutcome>(&renamed))
+			{
+				if (*outcome == NodeOutcome::Completed)
+					accountRenamedSubtree(tree);
+				else if (*outcome == NodeOutcome::Skipped)
+					accountSkippedSubtree(tree);
+				return *outcome;
+			}
+			if (std::get<RenameBlock>(renamed) == RenameBlock::CrossDevice)
 				knownCrossDevice = true;
 			else
 			{
@@ -457,13 +669,6 @@ NodeOutcome CTransferExecutor::moveRoot(const RootTransferIntent& intent)
 		}
 
 		// Merge, or cross-device materialization: traversal is required from here.
-		auto built = buildManifestWithRetry(root);
-		if (const auto* endedOutcome = std::get_if<NodeOutcome>(&built))
-			return finishUnscannedRoot(*endedOutcome);
-		SourceNode& tree = std::get<SourceNode>(built);
-
-		rootTotalsResolved(tree.subtreeBytes, tree.subtreeItems);
-		_context.publishProgressSnapshot(); // Back to Working, with totals possibly exact from here on
 		return runDirectoryNode(tree, TransferNodePosition::SelectedRoot, mv(choice), knownCrossDevice);
 	}
 }
@@ -913,13 +1118,4 @@ void CTransferExecutor::accountAlreadySatisfiedSubtree(const SourceNode& node)
 	_context.addAlreadySatisfiedItems(node.subtreeItems);
 	_context.progress().advanceWithoutTransfer(node.subtreeBytes, node.subtreeItems);
 	_context.publishProgressSnapshot();
-}
-
-void CTransferExecutor::rootTotalsResolved(const uint64_t bytes, const size_t items)
-{
-	assert_debug_only(_rootsWithUnresolvedTotals > 0);
-	_knownTotalBytes += bytes;
-	_knownTotalItems += items;
-	if (--_rootsWithUnresolvedTotals == 0)
-		_context.progress().setTotals(_knownTotalBytes, _knownTotalItems);
 }

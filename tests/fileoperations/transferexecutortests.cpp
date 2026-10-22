@@ -109,7 +109,7 @@ TEST_CASE("copy executor: files, trees, and multiple roots", "[executor]")
 		CHECK(script.seenRequests[0].issue.failure->action == FailedAction::CreateDestinationDirectory);
 	}
 
-	SECTION("an uninspectable destination parent is an inspection failure, retryable")
+	SECTION("an uninspectable destination is an inspection failure, retryable")
 	{
 		const QByteArray contents = patternedContents(100);
 		writeTestFile(base % "/a.bin", contents);
@@ -124,7 +124,8 @@ TEST_CASE("copy executor: files, trees, and multiple roots", "[executor]")
 		REQUIRE(script.seenRequests.size() == 1);
 		REQUIRE(script.seenRequests[0].issue.failure.has_value());
 		CHECK(script.seenRequests[0].issue.failure->action == FailedAction::InspectDestination);
-		CHECK(script.seenRequests[0].issue.failure->path == ep(base));
+		CHECK(script.seenRequests[0].issue.failure->path == ep(base % "/copied.bin"));
+		CHECK(script.seenPlans.empty()); // Planning met the failure live; an empty plan is never presented
 	}
 
 	SECTION("empty and multi-chunk files")
@@ -342,7 +343,7 @@ TEST_CASE("copy executor: skips leave siblings running and never demote completi
 		CHECK(readFileContents(base % "/dest/src/free.bin") == patternedContents(200));
 	}
 
-	SECTION("skipping a directory root before it is ever scanned")
+	SECTION("skipping a directory root counts its whole scanned subtree")
 	{
 		REQUIRE(QDir{}.mkpath(base % "/src/deep/deeper"));
 		writeTestFile(base % "/src/deep/deeper/x.bin", patternedContents(100));
@@ -352,10 +353,11 @@ TEST_CASE("copy executor: skips leave siblings running and never demote completi
 		const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 
 		CHECK(summary.status == CompletionStatus::Completed);
-		CHECK(summary.skippedItems == 1); // Only the unscanned root is known
+		CHECK(summary.skippedItems == 4); // Planning scanned the root before the question was answered
 		CHECK(summary.completedItems == 0);
-		for (const ProgressSnapshot& snapshot : script.progress)
-			CHECK(snapshot.phase != OperationPhase::Scanning); // Root-first resolution: no scan happened
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::RootDirectoryMerge);
 	}
 }
 
@@ -493,7 +495,9 @@ TEST_CASE("copy executor: remembered decisions span items with accurate wording"
 
 		CHECK(summary.status == CompletionStatus::Completed);
 		CHECK(summary.completedItems == 3);
-		CHECK(script.seenRequests.size() == 2); // The merge and one replacement prompt
+		CHECK(script.seenRequests.empty());
+		REQUIRE(script.seenPlans.size() == 1);
+		CHECK(script.seenPlans[0].size() == 3); // The merge and both replacements, planned under the assumed merge
 		CHECK(readFileContents(base % "/dest/src/one.bin") == patternedContents(100));
 		CHECK(readFileContents(base % "/dest/src/two.bin") == patternedContents(200));
 	}
@@ -538,8 +542,11 @@ TEST_CASE("copy executor: Merge All answers the remaining root collisions", "[ex
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(summary.completedItems == 4); // Both merged roots and both files
-	REQUIRE(script.seenRequests.size() == 1); // The second root's collision was answered from the remembered Merge
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::RootDirectoryMerge);
+	CHECK(script.seenRequests.empty());
+	REQUIRE(script.seenPlans.size() == 1);
+	REQUIRE(script.seenPlans[0].size() == 2); // Both roots' collisions, answered by one Merge All
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::RootDirectoryMerge);
+	CHECK(script.seenPlans[0][1].issue.kind == IssueKind::RootDirectoryMerge);
 	CHECK(readFileContents(base % "/dest/srcA/a.bin") == patternedContents(100));
 	CHECK(readFileContents(base % "/dest/srcA/keep.bin") == QByteArray{ "KEEP" }); // Merged, not replaced
 	CHECK(readFileContents(base % "/dest/srcB/b.bin") == patternedContents(200));
@@ -626,10 +633,11 @@ TEST_CASE("copy executor: retries restart a fresh staging session", "[executor]"
 		const auto summary = runCopy(script, { base % "/a.bin" }, DestinationIntent::ExactEntry, base % "/taken.bin");
 
 		CHECK(summary.status == CompletionStatus::Completed);
-		REQUIRE(script.seenRequests.size() == 2);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
-		CHECK(script.seenRequests[1].issue.kind == IssueKind::ActionFailed); // Not another replacement question
-		CHECK(script.seenRequests[1].issue.failure->action == FailedAction::PublishDestination);
+		REQUIRE(script.seenPlans.size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
+		REQUIRE(script.seenRequests.size() == 1);
+		CHECK(script.seenRequests[0].issue.kind == IssueKind::ActionFailed); // Not another replacement question
+		CHECK(script.seenRequests[0].issue.failure->action == FailedAction::PublishDestination);
 		CHECK(readFileContents(base % "/taken.bin") == contents);
 	}
 
@@ -712,11 +720,12 @@ TEST_CASE("copy executor: a commit-stage failure leaves the old destination in p
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(summary.skippedItems == 1);
-	REQUIRE(script.seenRequests.size() == 2);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
-	CHECK(script.seenRequests[1].issue.kind == IssueKind::ActionFailed); // The authorization does not answer the failure
-	REQUIRE(script.seenRequests[1].issue.failure.has_value());
-	CHECK(script.seenRequests[1].issue.failure->action == expectedAction);
+	REQUIRE(script.seenPlans.size() == 1);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
+	REQUIRE(script.seenRequests.size() == 1);
+	CHECK(script.seenRequests[0].issue.kind == IssueKind::ActionFailed); // The authorization does not answer the failure
+	REQUIRE(script.seenRequests[0].issue.failure.has_value());
+	CHECK(script.seenRequests[0].issue.failure->action == expectedAction);
 	CHECK(readFileContents(base % "/dest.bin") == oldContents);
 	CHECK(stagingFileCount(base) == 0);
 	// An authorized replacement is one of the two cases the durability contract flushes for.
@@ -745,7 +754,8 @@ TEST_CASE("copy executor: a retry after a commit-stage failure leaves no staging
 	CHECK(readFileContents(base % "/dest.bin") == contents);
 	CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 2); // A genuinely new session
 	CHECK(stagingFileCount(base) == 0);
-	CHECK(script.seenRequests.size() == 2); // The retry did not re-ask for replacement authorization
+	CHECK(script.seenPlans.size() == 1);    // The retry did not re-ask for replacement authorization
+	CHECK(script.seenRequests.size() == 1); // The failure alone
 }
 
 #ifdef _WIN32
@@ -765,8 +775,8 @@ TEST_CASE("copy executor: authorized replacement publishes over a read-only dest
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(summary.completedItems == 1);
-	REQUIRE(script.seenRequests.size() == 1);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+	REQUIRE(script.seenPlans.size() == 1);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
 	CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 1);
 	CHECK(hooks.arrivalCount(Point::RenameEntry_Native) == 2);
 	CHECK(readFileContents(base % "/source.bin") == contents);
@@ -813,8 +823,9 @@ TEST_CASE("copy executor: a file colliding with an existing directory is a type 
 
 		CHECK(summary.status == CompletionStatus::Completed);
 		CHECK(summary.skippedItems == 1);
-		REQUIRE(script.seenRequests.size() == 1);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::TypeMismatch);
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::TypeMismatch);
 		CHECK(!entryAbsent(base % "/dest/a.bin"));
 	}
 
@@ -948,11 +959,12 @@ TEST_CASE("copy executor: a directory raced into a Replace destination re-enters
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(summary.completedItems == 1);
-	REQUIRE(script.seenRequests.size() == 2);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
-	CHECK(script.seenRequests[1].issue.kind == IssueKind::TypeMismatch);
-	REQUIRE(script.seenRequests[1].issue.destination.has_value());
-	CHECK(script.seenRequests[1].issue.destination->kind == OperationEntryKind::Directory);
+	REQUIRE(script.seenPlans.size() == 1);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
+	REQUIRE(script.seenRequests.size() == 1); // The raced collision has no planned answer: a live prompt
+	CHECK(script.seenRequests[0].issue.kind == IssueKind::TypeMismatch);
+	REQUIRE(script.seenRequests[0].issue.destination.has_value());
+	CHECK(script.seenRequests[0].issue.destination->kind == OperationEntryKind::Directory);
 	CHECK(QFileInfo{ base % "/destination.bin" }.isDir());
 	CHECK(readFileContents(base % "/renamed.bin") == contents);
 }
@@ -1226,9 +1238,11 @@ TEST_CASE("copy executor: skipping a scanned directory counts its whole subtree"
 	CHECK(summary.completedItems == 1); // The merged root directory
 	CHECK(summary.skippedItems == 4); // A, b.bin, C, d.bin - the whole scanned subtree, not one item
 
-	REQUIRE(script.seenRequests.size() == 2);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::RootDirectoryMerge);
-	CHECK(script.seenRequests[1].issue.kind == IssueKind::TypeMismatch);
+	CHECK(script.seenRequests.empty());
+	REQUIRE(script.seenPlans.size() == 1);
+	REQUIRE(script.seenPlans[0].size() == 2);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::RootDirectoryMerge);
+	CHECK(script.seenPlans[0][1].issue.kind == IssueKind::TypeMismatch);
 	CHECK(readFileContents(base % "/dest/src/A") == patternedContents(10)); // The occupying file is untouched
 	CHECK(readFileContents(base % "/src/A/C/d.bin") == patternedContents(200));
 }

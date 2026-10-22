@@ -38,6 +38,19 @@ Important boundaries:
 7. Namespace decisions are path-bound. External processes can replace a source or destination between inspection,
    authorization, and mutation; eliminating that limitation would require stable identities plus handle-bound or
    conditional native operations, not another path recheck.
+8. A transfer plans before it executes. Planning inspects and scans every root, and runs the destination resolvers
+   with the context recording: a conflict (collision, type mismatch, unsupported entry, read-only source of a
+   copy-based move) becomes a plan row instead of a prompt, and the walk descends as if every merge were accepted.
+   The plan is presented once, re-planned only while answers rename something, and its answers are stored per
+   (source path, issue kind) as a queue. Execution then resolves every node again as if unplanned; the context
+   answers a question from the stored queue when the same key comes up, and prompts live otherwise. Errors
+   (`ActionFailed`) are never planned. Planning writes only what a move writes before its first question: the
+   destination parent chain and the optimistic whole-root rename.
+   - Two items planned onto one final name: a rename that causes it is refused in the plan; two unrenamed names that
+     fold to one, and same-name roots from different folders, are left to execution's live prompt.
+   - Whether a move crosses volumes is known only from a failed rename. Where the whole-root rename hit an existing
+     destination, planning predicts it from the volume identities; a wrong prediction costs unused plan rows or one
+     live prompt, never a wrong write.
 
 Exclusive publication degrades to a check followed by rename when the filesystem lacks an exclusive-rename
 primitive. This preserves compatibility but admits a narrow external race. Publication also relies on normal

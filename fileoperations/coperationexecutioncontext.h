@@ -5,15 +5,20 @@
 
 // Submodule includes
 #include "compiler/compiler_warnings_control.h"
+#include "hash/rapidhash.hpp"
 
 
 DISABLE_COMPILER_WARNINGS
+#include <3rdparty/ankerl/unordered_dense.h>
 #include <3rdparty/magic_enum/magic_enum.hpp>
+
+#include <QString>
 RESTORE_COMPILER_WARNINGS
 
 #include <array>
 #include <chrono>
 #include <functional>
+#include <vector>
 
 // Timing and arithmetic for Working-phase progress; Scanning snapshots come from the tree builder.
 // Receives semantic updates and assembles the snapshots the dialog renders. Time spent paused or
@@ -75,10 +80,12 @@ public:
 	using CheckpointCallback = std::function<bool()>;
 	// Presents one decision request; nullopt means cancellation overrode the wait.
 	using DecisionCallback = std::function<std::optional<Decision>(const DecisionRequest&)>;
+	// Presents the conflict plan; nullopt means cancellation overrode the wait.
+	using PlanCallback = std::function<std::optional<ConflictResolutions>(const ConflictPlan&)>;
 	using ProgressCallback = std::function<void(const ProgressSnapshot&)>;
 
 	COperationExecutionContext(PrimaryProgressUnit primaryUnit,
-		CheckpointCallback checkpoint, DecisionCallback decisionProvider, ProgressCallback progressPublisher);
+		CheckpointCallback checkpoint, DecisionCallback decisionProvider, PlanCallback planPresenter, ProgressCallback progressPublisher);
 
 	// False = cancellation; no new mutation may start.
 	[[nodiscard]] bool checkpoint();
@@ -90,7 +97,26 @@ public:
 	// RemainingMatchingIssues response to it is recorded as ThisItem.
 	// Decision waits are excluded from progress speed/ETA.
 	// nullopt = cancellation overrode the decision.
+	// A conflict kind (never ActionFailed) is answered from the planned decisions first, see setPlannedDecisions.
 	[[nodiscard]] std::optional<Decision> resolveDecision(OperationIssue issue, bool remainingMatchingScopeAllowed = true);
+
+	// --- Conflict planning ---
+
+	// While recording, a conflict kind without a planned decision is recorded as a new row and answered internally:
+	// Merge for RootDirectoryMerge so the planner descends, Skip for every other kind. Remembered decisions are
+	// neither consulted nor stored. ActionFailed is forwarded live as always.
+	void startConflictRecording();
+	// The planned rows consulted and the rows recorded since startConflictRecording, in that encounter order.
+	[[nodiscard]] ConflictPlan finishConflictRecording();
+	// Only while recording: marks this source's most recent Rename row as taken, so the plan asks for it again.
+	void flagRenameTargetTaken(const CEntryPath& source);
+
+	// The rows' resolutions become the planned decisions: one queue per (source path, kind), consumed in order by
+	// resolveDecision. Replaces the previous plan. A row without a resolution stores nothing.
+	void setPlannedDecisions(ConflictPlan plan);
+
+	// The wait is excluded from progress speed/ETA. nullopt = cancellation overrode the plan.
+	[[nodiscard]] std::optional<ConflictResolutions> presentConflictPlan(const ConflictPlan& plan);
 
 	[[nodiscard]] COperationProgress& progress() noexcept { return _progress; }
 	void publishProgress(const ProgressSnapshot& snapshot);
@@ -111,14 +137,47 @@ public:
 	[[nodiscard]] OperationSummary makeSummary(CompletionStatus status) const;
 
 private:
+	struct PlannedDecisionKey
+	{
+		QString sourcePath;
+		IssueKind kind;
+
+		[[nodiscard]] bool operator==(const PlannedDecisionKey&) const noexcept = default;
+	};
+
+	struct PlannedDecisionKeyHash
+	{
+		using is_avalanching = std::true_type;
+		[[nodiscard]] size_t operator()(const PlannedDecisionKey& key) const noexcept
+		{
+			return ::rapidhash64(key.sourcePath.constData(), static_cast<size_t>(key.sourcePath.size()) * sizeof(QChar), static_cast<uint64_t>(key.kind));
+		}
+	};
+
+	// Rows of _plannedRows with a resolution, in plan order; consumed from the front.
+	struct PlannedDecisionQueue
+	{
+		std::vector<size_t> rows;
+		size_t nextRow = 0;
+	};
+
+	[[nodiscard]] std::optional<Decision> takePlannedDecision(const OperationIssue& issue);
+	void recordConflict(OperationIssue issue);
+
 	CheckpointCallback _checkpoint;
 	DecisionCallback _decisionProvider;
+	PlanCallback _planPresenter;
 	ProgressCallback _progressPublisher;
 
 	COperationProgress _progress;
 
 	// Keyed by IssueKind; only actions rememberable per the normative table are ever stored.
 	std::array<std::optional<DecisionAction>, magic_enum::enum_count<IssueKind>()> _rememberedDecisions;
+
+	ConflictPlan _plannedRows;
+	ankerl::unordered_dense::map<PlannedDecisionKey, PlannedDecisionQueue, PlannedDecisionKeyHash> _plannedDecisions;
+	bool _recording = false;
+	ConflictPlan _recordedPlan;
 
 	OperationSummary _accumulatedSummary;
 };

@@ -78,6 +78,8 @@ protected:
 	// Presents one decision request and returns the user's choice. The production path shows a modal
 	// CFileOperationPrompt; a test overrides this to answer synchronously.
 	[[nodiscard]] virtual Decision presentDecision(const DecisionRequest& request);
+	// Presents the conflict plan and returns one resolution per row; nullopt cancels the operation.
+	[[nodiscard]] virtual std::optional<ConflictResolutions> presentConflictPlan(const ConflictPlan& plan);
 
 	// Formats one snapshot into the widgets. Protected so the rendering branches can be verified with
 	// synthetic snapshots, without racing a live job.
@@ -93,6 +95,7 @@ private:
 	void onOperationEvent(const OperationEvent& event) override;
 
 	void handleDecisionRequest(const DecisionRequest& request);
+	void handleConflictPlan(const ConflictPlan& plan);
 	void handleCompletion(const OperationSummary& summary);
 
 	void togglePause();

@@ -171,11 +171,13 @@ TEST_CASE("move executor: same-filesystem renames", "[moveexecutor]")
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(700));
 		CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 0); // Renamed, not staged
 
-		REQUIRE(script.seenRequests.size() == 1);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+		CHECK(script.seenRequests.empty());
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
 	}
 
-	SECTION("an occupied leaf is attempted once before destination resolution")
+	SECTION("an occupied leaf is attempted once per phase before destination resolution")
 	{
 		writeTestFile(base % "/src.bin", patternedContents(700));
 		writeTestFile(base % "/dest.bin", patternedContents(50));
@@ -188,7 +190,7 @@ TEST_CASE("move executor: same-filesystem renames", "[moveexecutor]")
 		CHECK(summary.skippedItems == 1);
 		CHECK(!entryAbsent(base % "/src.bin"));
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
-		CHECK(hooks.arrivalCount(Point::RenameEntry_Native) == 1);
+		CHECK(hooks.arrivalCount(Point::RenameEntry_Native) == 2); // The optimistic rename at planning, then rename-first at execution
 	}
 
 	SECTION("moving onto a hardlink alias of the source")
@@ -248,14 +250,15 @@ TEST_CASE("move executor: cancellation is checked when a destination race restar
 		writeTestFile(base % "/occupied", QByteArray{ "OLD" });
 
 		CFaultHookScope hooks;
-		OperationScript script{ .decisions = {
-			Decision{ DecisionAction::Rename, DecisionScope::ThisItem, QStringLiteral("raced") },
-			act(DecisionAction::Skip) } };
-		script.onDecisionRequest = [&](const DecisionRequest&) {
-			if (script.nextDecision == 0)
-				hooks.armBarrier(Point::RenameEntry_Native);
+		OperationScript script{ .decisions = { Decision{ DecisionAction::Rename, DecisionScope::ThisItem, QStringLiteral("raced") } } };
+		// Planning attempted the whole-root rename once; the next attempt is execution's rename to the respelled target.
+		script.answerPlan = [&](const ConflictPlan& plan) {
+			hooks.armBarrier(Point::RenameEntry_Native);
+			auto resolutions = answerPlanFromScript(plan, script.decisions, script.nextDecision);
+			REQUIRE(resolutions.has_value());
+			return *resolutions;
 		};
-		script.cancelAtCheckpoint = [&] { return script.nextDecision == 1; };
+		script.cancelAtCheckpoint = [&] { return hooks.arrivalCount(Point::RenameEntry_Native) >= 2; };
 		const auto request = makeTransferRequest(TransferKind::Move, { base % "/source" },
 			DestinationIntent::ExactEntry, base % "/occupied");
 		REQUIRE(request.has_value());
@@ -274,8 +277,10 @@ TEST_CASE("move executor: cancellation is checked when a destination race restar
 		CHECK(!entryAbsent(base % "/source"));
 		CHECK(readFileContents(base % "/occupied") == QByteArray{ "OLD" });
 		CHECK(readFileContents(base % "/raced") == QByteArray{ "RACE" });
-		REQUIRE(script.seenRequests.size() == 1);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::TypeMismatch);
+		CHECK(script.seenRequests.empty());
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::TypeMismatch);
 	}
 
 	SECTION("file with a remembered replacement decision")
@@ -284,19 +289,20 @@ TEST_CASE("move executor: cancellation is checked when a destination race restar
 		writeTestFile(base % "/destination.bin", QByteArray{ "OLD" });
 
 		CFaultHookScope hooks;
-		// The leaf's rename-first attempt encounters the real destination. The authorized replacement
-		// then reports a fresh collision and restarts the resolution loop.
-		hooks.forceNativeError(Point::RenameEntry_Native, existsCode, 1, 1);
+		// Planning's optimistic rename and execution's rename-first attempt both encounter the real destination.
+		// The authorized replacement then reports a fresh collision and restarts the resolution loop.
+		hooks.forceNativeError(Point::RenameEntry_Native, existsCode, 1, 2);
 
 		OperationScript script{ .decisions = { act(DecisionAction::Replace, DecisionScope::RemainingMatchingIssues) } };
-		script.cancelAtCheckpoint = [&] { return script.nextDecision == 1; };
+		script.cancelAtCheckpoint = [&] { return hooks.arrivalCount(Point::RenameEntry_Native) >= 3; };
 		const auto summary = runMove(script, { base % "/source.bin" }, DestinationIntent::ExactEntry, base % "/destination.bin");
 
 		CHECK(summary.status == CompletionStatus::Cancelled);
 		CHECK(!entryAbsent(base % "/source.bin"));
 		CHECK(readFileContents(base % "/destination.bin") == QByteArray{ "OLD" });
-		REQUIRE(script.seenRequests.size() == 1); // The remembered answer was never consulted for another turn
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+		CHECK(script.seenRequests.empty()); // Cancellation won before the fresh collision could prompt
+		REQUIRE(script.seenPlans.size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
 	}
 }
 
@@ -595,9 +601,11 @@ TEST_CASE("move executor: merge with per-child renames", "[moveexecutor]")
 	// Everything moved by rename: the descendant merge was silent, the non-colliding subtree and files
 	// renamed directly, and the authorized replacement used the atomic rename form.
 	CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 0);
-	REQUIRE(script.seenRequests.size() == 2);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::RootDirectoryMerge);
-	CHECK(script.seenRequests[1].issue.kind == IssueKind::FileReplacement);
+	CHECK(script.seenRequests.empty());
+	REQUIRE(script.seenPlans.size() == 1);
+	REQUIRE(script.seenPlans[0].size() == 2);
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::RootDirectoryMerge);
+	CHECK(script.seenPlans[0][1].issue.kind == IssueKind::FileReplacement);
 
 	CHECK(summary.completedItems == 7); // src, shared, fresh.bin, unique subtree (2), x.bin, y.bin
 }
@@ -775,14 +783,14 @@ TEST_CASE("move executor: pre-publication read-only policy", "[moveexecutor][rea
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
 
-		script.onDecisionRequest = [&](const DecisionRequest& request) {
-			CHECK(request.issue.kind == IssueKind::ReadOnlySourceRemoval);
-			CHECK(request.remainingMatchingScopeAllowed);
-			CHECK(!request.issue.failure.has_value());
+		script.answerPlan = [&](const ConflictPlan& plan) {
+			REQUIRE(plan.size() == 1);
+			CHECK(plan[0].issue.kind == IssueKind::ReadOnlySourceRemoval);
+			CHECK(!plan[0].issue.failure.has_value());
 			CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 0); // Nothing staged yet
 			CHECK(!QFileInfo{ filePath }.isWritable()); // And the source is untouched
+			return ConflictResolutions{ act(DecisionAction::MakeWritable) };
 		};
-		script.decisions = { act(DecisionAction::MakeWritable) };
 		const auto summary = runMove(script, { filePath }, DestinationIntent::IntoDirectory, base % "/dest");
 
 		CHECK(summary.status == CompletionStatus::Completed);
@@ -790,7 +798,8 @@ TEST_CASE("move executor: pre-publication read-only policy", "[moveexecutor][rea
 		CHECK(entryAbsent(filePath));
 		CHECK(readFileContents(base % "/dest/readonly.bin") == patternedContents(100));
 		CHECK(!QFileInfo{ base % "/dest/readonly.bin" }.isWritable()); // The destination keeps the source's read-only state
-		CHECK(script.seenRequests.size() == 1);
+		CHECK(script.seenRequests.empty());
+		CHECK(script.seenPlans.size() == 1);
 
 		setFileReadOnly(base % "/dest/readonly.bin", false);
 	}
@@ -813,18 +822,32 @@ TEST_CASE("move executor: pre-publication read-only policy", "[moveexecutor][rea
 		setFileReadOnly(filePath, false);
 	}
 
-	SECTION("Retry observes an external permission change")
+	SECTION("a read-only state appearing after planning prompts live, and Retry observes an external permission change")
 	{
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
 
-		script.onDecisionRequest = [&](const DecisionRequest&) { setFileReadOnly(filePath, false); };
+		// Writable while planning, so nothing is planned; read-only once the working phase has begun.
+		setFileReadOnly(filePath, false);
+		bool madeReadOnly = false;
+		script.onCheckpoint = [&] {
+			if (madeReadOnly || script.progress.empty() || script.progress.back().phase != OperationPhase::Working)
+				return;
+			setFileReadOnly(filePath, true);
+			madeReadOnly = true;
+		};
+		script.onDecisionRequest = [&](const DecisionRequest& request) {
+			CHECK(request.issue.kind == IssueKind::ReadOnlySourceRemoval);
+			setFileReadOnly(filePath, false);
+		};
 		script.decisions = { act(DecisionAction::Retry) };
 		const auto summary = runMove(script, { filePath }, DestinationIntent::IntoDirectory, base % "/dest");
 
 		CHECK(summary.status == CompletionStatus::Completed);
 		CHECK(summary.completedItems == 1);
 		CHECK(entryAbsent(filePath));
+		CHECK(madeReadOnly);
+		CHECK(script.seenPlans.empty());
 		CHECK(script.seenRequests.size() == 1);
 	}
 
@@ -848,7 +871,9 @@ TEST_CASE("move executor: pre-publication read-only policy", "[moveexecutor][rea
 		CHECK(summary.failedItems == 0);
 		CHECK(!entryAbsent(base % "/src/ro1.bin"));
 		CHECK(!entryAbsent(base % "/src/ro2.bin"));
-		CHECK(script.seenRequests.size() == 1);
+		CHECK(script.seenRequests.empty());
+		REQUIRE(script.seenPlans.size() == 1);
+		CHECK(script.seenPlans[0].size() == 2); // Both read-only files, planned before anything was staged
 		CHECK(hooks.arrivalCount(Point::StagedCopy_CreateStaging_Native) == 0); // Neither file was ever staged
 
 		setFileReadOnly(base % "/src/ro1.bin", false);
@@ -861,12 +886,13 @@ TEST_CASE("move executor: pre-publication read-only policy", "[moveexecutor][rea
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
 
-		script.decisions = { act(DecisionAction::Cancel) };
+		script.cancelInsteadOfAnswering = true; // Cancelled at the plan
 		const auto summary = runMove(script, { filePath }, DestinationIntent::IntoDirectory, base % "/dest");
 
 		CHECK(summary.status == CompletionStatus::Cancelled);
 		CHECK(!entryAbsent(filePath));
 		CHECK(entryAbsent(base % "/dest/readonly.bin"));
+		CHECK(script.seenPlans.size() == 1);
 
 		setFileReadOnly(filePath, false);
 	}
@@ -976,10 +1002,11 @@ TEST_CASE("move executor: committed cleanup", "[moveexecutor]")
 		CHECK(!QFileInfo{ base % "/readonly.bin" }.isWritable());
 		CHECK(!entryAbsent(base % "/dest/readonly.bin"));
 
-		REQUIRE(script.seenRequests.size() == 2);
-		CHECK(script.seenRequests[0].issue.kind == IssueKind::ReadOnlySourceRemoval);
-		CHECK(script.seenRequests[1].issue.kind == IssueKind::ActionFailed);
-		CHECK(!script.seenRequests[1].remainingMatchingScopeAllowed);
+		REQUIRE(script.seenPlans.size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::ReadOnlySourceRemoval);
+		REQUIRE(script.seenRequests.size() == 1);
+		CHECK(script.seenRequests[0].issue.kind == IssueKind::ActionFailed);
+		CHECK(!script.seenRequests[0].remainingMatchingScopeAllowed);
 
 		setFileReadOnly(base % "/readonly.bin", false);
 		setFileReadOnly(base % "/dest/readonly.bin", false);
@@ -1071,8 +1098,10 @@ TEST_CASE("move executor: an already-satisfied child blocks owned-directory clea
 	CHECK(readFileContents(base % "/dest/src/a.bin") == patternedContents(400));
 	CHECK(readFileContents(base % "/dest/src/b.bin") == patternedContents(900));
 
-	REQUIRE(script.seenRequests.size() == 1);
-	CHECK(script.seenRequests[0].issue.kind == IssueKind::RootDirectoryMerge);
+	CHECK(script.seenRequests.empty());
+	REQUIRE(script.seenPlans.size() == 1);
+	REQUIRE(script.seenPlans[0].size() == 1); // The same-object child is never a conflict
+	CHECK(script.seenPlans[0][0].issue.kind == IssueKind::RootDirectoryMerge);
 }
 
 TEST_CASE("move executor: raced read-only state during committed removal", "[moveexecutor][readonly]")
@@ -1313,7 +1342,7 @@ TEST_CASE("move executor: a committed-cleanup failure on a directory entry is it
 	CHECK(!entryAbsent(base % "/dest/srcdir")); // ...and the published destination is never rolled back
 }
 
-TEST_CASE("move executor: all-rename multi-root totals resolve only at the last root", "[moveexecutor]")
+TEST_CASE("move executor: all-rename multi-root totals resolve once planning ends", "[moveexecutor]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -1332,7 +1361,7 @@ TEST_CASE("move executor: all-rename multi-root totals resolve only at the last 
 	CHECK(summary.completedItems == 3);
 	CHECK(summary.transferredBytes == 0);
 
-	// The first root's completion publishes with two roots still unresolved; once a total appears it is exact.
+	// The roots complete during planning, before any total is known; once a total appears it is exact.
 	REQUIRE(!script.progress.empty());
 	CHECK(!script.progress.front().itemsTotal.has_value());
 	for (const ProgressSnapshot& snapshot : script.progress)

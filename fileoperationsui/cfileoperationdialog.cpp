@@ -159,6 +159,8 @@ void CFileOperationDialog::onOperationEvent(const OperationEvent& event)
 			renderProgress(payload);
 		else if constexpr (std::is_same_v<E, DecisionRequest>)
 			handleDecisionRequest(payload);
+		else if constexpr (std::is_same_v<E, ConflictPlan>)
+			handleConflictPlan(payload);
 		else
 			handleCompletion(payload);
 	}, event);
@@ -214,13 +216,27 @@ void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 void CFileOperationDialog::handleDecisionRequest(const DecisionRequest& request)
 {
 	// A cancellation that landed after this event left the queue invalidates the prompt: do not present it.
-	if (!_job.hasPendingDecision())
+	if (!_job.hasPendingQuestion())
 		return;
 
 	show(); // The modal prompt must not stand alone on screen if the first show is still pending
 	ui->_overallProgress->setState(psStopped);
 	const Decision decision = presentDecision(request);
 	(void)_job.submitDecision(decision); // Cancellation or re-entrant submission may already have closed the request
+	ui->_overallProgress->setState(_paused ? psPaused : psNormal);
+}
+
+void CFileOperationDialog::handleConflictPlan(const ConflictPlan& plan)
+{
+	if (!_job.hasPendingQuestion())
+		return;
+
+	show();
+	ui->_overallProgress->setState(psStopped);
+	if (auto resolutions = presentConflictPlan(plan))
+		(void)_job.submitConflictResolutions(mv(*resolutions));
+	else
+		requestCancellation();
 	ui->_overallProgress->setState(_paused ? psPaused : psNormal);
 }
 
@@ -315,6 +331,22 @@ Decision CFileOperationDialog::presentDecision(const DecisionRequest& request)
 {
 	CFileOperationPrompt prompt{ request, _operation, this };
 	return prompt.ask();
+}
+
+std::optional<ConflictResolutions> CFileOperationDialog::presentConflictPlan(const ConflictPlan& plan)
+{
+	ConflictResolutions resolutions;
+	resolutions.reserve(plan.size());
+	for (const PlannedConflict& row : plan)
+	{
+		AllowedActions actions = plannableActionsFor(row.issue.kind);
+		actions.push_back(DecisionAction::Cancel);
+		const Decision decision = presentDecision(DecisionRequest{ row.issue, mv(actions), false });
+		if (decision.action == DecisionAction::Cancel)
+			return {};
+		resolutions.push_back(decision);
+	}
+	return resolutions;
 }
 
 void CFileOperationDialog::requestCancellation()
