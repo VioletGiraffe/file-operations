@@ -25,6 +25,52 @@ QString fileOperationEntryKindNoun(const OperationEntryKind kind)
 	return {};
 }
 
+QString fileOperationIssueText(const OperationIssue& issue, const PromptOperation operation)
+{
+	// Kinds that require a destination snapshot are guarded anyway: this formats, it does not validate.
+	const OperationEntryKind destinationKind = issue.destination ? issue.destination->kind : OperationEntryKind::RegularFile;
+
+	using enum IssueKind;
+	switch (issue.kind)
+	{
+	case FileReplacement:
+		return QObject::tr("The destination %1 already exists.").arg(fileOperationEntryKindNoun(destinationKind));
+	case RootDirectoryMerge:
+		return QObject::tr("The destination folder already exists. Merge the source folder's contents into it?");
+	case TypeMismatch:
+		return QObject::tr("The source is a %1, but the existing destination is a %2. An entry cannot replace an entry of a different type.")
+			.arg(fileOperationEntryKindNoun(issue.source.kind), fileOperationEntryKindNoun(destinationKind));
+	case ActionFailed:
+		return issue.failure ? QObject::tr("%1 failed.").arg(fileOperationFailedActionText(issue.failure->action)) : QObject::tr("The operation failed.");
+	case ReadOnlySourceRemoval:
+		return operation == PromptOperation::Move
+			? QObject::tr("The source file is read-only, and moving it requires removing the source.")
+			: QObject::tr("The file is read-only.");
+	case UnsupportedEntry:
+		return QObject::tr("This entry is not a file or a folder (a device, pipe, or socket) and cannot be %1.")
+			.arg(operation == PromptOperation::Move ? QObject::tr("moved") : QObject::tr("copied"));
+	}
+
+	return {};
+}
+
+QString fileOperationActionLabel(const DecisionAction action, const PromptOperation operation)
+{
+	using enum DecisionAction;
+	switch (action)
+	{
+	case Skip: return QObject::tr("Skip");
+	case Replace: return QObject::tr("Replace");
+	case Merge: return QObject::tr("Merge");
+	case MakeWritable:
+		return operation == PromptOperation::Move ? QObject::tr("Make writable and move") : QObject::tr("Make writable and delete");
+	case Rename: return QObject::tr("Rename");
+	case Retry: return QObject::tr("Retry");
+	case Cancel: return QObject::tr("Cancel");
+	}
+	return {};
+}
+
 QString fileOperationFailedActionText(const FailedAction action)
 {
 	using enum FailedAction;

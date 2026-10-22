@@ -91,7 +91,7 @@ CFileOperationPrompt::CFileOperationPrompt(const DecisionRequest& request, const
 	case PromptOperation::Delete: setWindowTitle(tr("Delete")); break;
 	}
 
-	ui->lblQuestion->setText(questionText());
+	ui->lblQuestion->setText(fileOperationIssueText(_request.issue, _operation));
 	setupEntryInfo();
 	setupAuxiliaryTexts();
 	createActionButtons();
@@ -163,7 +163,7 @@ void CFileOperationPrompt::createActionButtons()
 	const std::optional<DecisionAction> defaultAction = defaultActionFor(_request.issue.kind);
 	for (const DecisionAction action : _request.allowedActions)
 	{
-		auto* button = new QPushButton{ actionLabel(action), this };
+		auto* button = new QPushButton{ fileOperationActionLabel(action, _operation), this };
 		button->setObjectName(buttonName(action));
 		button->setAutoDefault(false);
 		button->setDefault(defaultAction && action == *defaultAction);
@@ -257,53 +257,6 @@ void CFileOperationPrompt::setupAuxiliaryTexts()
 		ui->lblRenameCaption->hide();
 		ui->renameEdit->hide();
 	}
-}
-
-QString CFileOperationPrompt::questionText() const
-{
-	const OperationIssue& issue = _request.issue;
-	// Kinds that require a destination snapshot are guarded anyway: the prompt renders, it does not validate.
-	const OperationEntryKind destinationKind = issue.destination ? issue.destination->kind : OperationEntryKind::RegularFile;
-
-	using enum IssueKind;
-	switch (issue.kind)
-	{
-	case FileReplacement:
-		return tr("The destination %1 already exists.").arg(fileOperationEntryKindNoun(destinationKind));
-	case RootDirectoryMerge:
-		return tr("The destination folder already exists. Merge the source folder's contents into it?");
-	case TypeMismatch:
-		return tr("The source is a %1, but the existing destination is a %2. An entry cannot replace an entry of a different type.")
-			.arg(fileOperationEntryKindNoun(issue.source.kind), fileOperationEntryKindNoun(destinationKind));
-	case ActionFailed:
-		return issue.failure ? tr("%1 failed.").arg(fileOperationFailedActionText(issue.failure->action)) : tr("The operation failed.");
-	case ReadOnlySourceRemoval:
-		return _operation == PromptOperation::Move
-			? tr("The source file is read-only, and moving it requires removing the source.")
-			: tr("The file is read-only.");
-	case UnsupportedEntry:
-		return tr("This entry is not a file or a folder (a device, pipe, or socket) and cannot be %1.")
-			.arg(_operation == PromptOperation::Move ? tr("moved") : tr("copied"));
-	}
-
-	return {};
-}
-
-QString CFileOperationPrompt::actionLabel(const DecisionAction action) const
-{
-	using enum DecisionAction;
-	switch (action)
-	{
-	case Skip: return tr("Skip");
-	case Replace: return tr("Replace");
-	case Merge: return tr("Merge");
-	case MakeWritable:
-		return _operation == PromptOperation::Move ? tr("Make writable and move") : tr("Make writable and delete");
-	case Rename: return tr("Rename");
-	case Retry: return tr("Retry");
-	case Cancel: return tr("Cancel");
-	}
-	return {};
 }
 
 QString CFileOperationPrompt::scopeLabel() const

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fileoperationtexts.h" // PromptOperation
+
 #include "fileoperations/fileoperationtypes.h"
 
 
@@ -16,15 +18,6 @@ class CFileOperationPrompt;
 }
 
 class QPushButton;
-
-// The operation whose issue is being presented; selects consequence wording only
-// (e.g. "Make writable and move" versus "and delete"), never the available policy.
-enum class PromptOperation
-{
-	Copy,
-	Move,
-	Delete
-};
 
 // The typed decision prompt: renders one DecisionRequest - only the delivered allowed actions, the
 // remaining-matching-issues scope where permitted and meaningful, and a rename row when Rename is
@@ -54,8 +47,6 @@ private:
 	void setupEntryInfo();
 	void setupAuxiliaryTexts();
 
-	[[nodiscard]] QString questionText() const;
-	[[nodiscard]] QString actionLabel(DecisionAction action) const;
 	[[nodiscard]] QString scopeLabel() const;
 
 	Ui::CFileOperationPrompt* ui;
