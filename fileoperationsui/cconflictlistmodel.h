@@ -26,8 +26,10 @@ public:
 	{
 		Name,
 		Issue,
-		Source,
-		Destination,
+		SourceSize,
+		SourceModified,
+		DestinationSize,
+		DestinationModified,
 		Action,
 		ColumnCount
 	};

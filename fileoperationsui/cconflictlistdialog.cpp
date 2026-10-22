@@ -230,7 +230,7 @@ void CConflictListDialog::selectRows(const std::function<bool(const PlannedConfl
 void CConflictListDialog::updateSummaryAndButtons()
 {
 	const size_t unanswered = _model.unansweredCount();
-	ui->lblSummary->setText(tr("%1 conflicts, %2 without an answer").arg(_model.rowsTotal()).arg(unanswered));
+	ui->lblSummary->setText(tr("%1 conflicts, %2 unanswered").arg(_model.rowsTotal()).arg(unanswered));
 	ui->btnStart->setEnabled(unanswered == 0);
 
 	const std::vector<size_t> selected = selectedPlanRows();

@@ -16,14 +16,24 @@ RESTORE_COMPILER_WARNINGS
 namespace
 {
 
-QString entryText(const EntrySnapshot& entry, const thin_io::timestamp lastWrite)
+QString issueText(const OperationIssue& issue)
 {
-	QString text = fileOperationEntryKindNoun(entry.kind);
-	if (entry.kind == OperationEntryKind::RegularFile || entry.kind == OperationEntryKind::FileLink)
-		text += QLatin1String(", ") % fileSizeToString(entry.size);
-	if (lastWrite.is_set())
-		text += QLatin1String(", ") % QDateTime::fromSecsSinceEpoch(lastWrite.seconds).toString(QStringLiteral("dd.MM.yyyy hh:mm"));
-	return text;
+	const QString kindText = fileOperationIssueKindText(issue.kind);
+	if (issue.kind != IssueKind::TypeMismatch || !issue.destination)
+		return kindText;
+	return QObject::tr("%1: %2 → %3").arg(kindText, fileOperationEntryKindNoun(issue.source.kind), fileOperationEntryKindNoun(issue.destination->kind));
+}
+
+// Empty for an entry without a size of its own.
+QString sizeText(const EntrySnapshot& entry)
+{
+	const bool hasSize = entry.kind == OperationEntryKind::RegularFile || entry.kind == OperationEntryKind::FileLink;
+	return hasSize ? fileSizeToString(entry.size) : QString{};
+}
+
+QString lastWriteText(const thin_io::timestamp lastWrite)
+{
+	return lastWrite.is_set() ? QDateTime::fromSecsSinceEpoch(lastWrite.seconds).toString(QStringLiteral("dd.MM.yyyy hh:mm:ss")) : QString{};
 }
 
 bool answeredSkipOrRename(const std::optional<Decision>& resolution) noexcept
@@ -158,15 +168,22 @@ QVariant CConflictListModel::data(const QModelIndex& index, const int role) cons
 			tip += QStringLiteral("\n→ ") % QDir::toNativeSeparators(issue.destination->path.value());
 		return tip;
 	}
+	if (role == Qt::TextAlignmentRole)
+	{
+		const bool sizeColumn = index.column() == SourceSize || index.column() == DestinationSize;
+		return sizeColumn ? QVariant::fromValue(Qt::Alignment{ Qt::AlignRight | Qt::AlignVCenter }) : QVariant{};
+	}
 	if (role != Qt::DisplayRole)
 		return {};
 
 	switch (index.column())
 	{
 	case Name: return nameText(row);
-	case Issue: return fileOperationIssueKindText(issue.kind);
-	case Source: return entryText(issue.source, row.conflict.sourceLastWrite);
-	case Destination: return issue.destination ? entryText(*issue.destination, row.conflict.destinationLastWrite) : QStringLiteral("-");
+	case Issue: return issueText(issue);
+	case SourceSize: return sizeText(issue.source);
+	case SourceModified: return lastWriteText(row.conflict.sourceLastWrite);
+	case DestinationSize: return issue.destination ? sizeText(*issue.destination) : QString{};
+	case DestinationModified: return lastWriteText(row.conflict.destinationLastWrite);
 	case Action: return actionText(row);
 	}
 	return {};
@@ -181,8 +198,10 @@ QVariant CConflictListModel::headerData(const int section, const Qt::Orientation
 	{
 	case Name: return tr("Name");
 	case Issue: return tr("Issue");
-	case Source: return tr("Source");
-	case Destination: return tr("Destination");
+	case SourceSize: return tr("Source size");
+	case SourceModified: return tr("Source modified");
+	case DestinationSize: return tr("Destination size");
+	case DestinationModified: return tr("Destination modified");
 	case Action: return tr("Action");
 	}
 	return {};

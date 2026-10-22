@@ -158,10 +158,13 @@ TEST_CASE("conflict list: the plan is a tree of roots and their descendants", "[
 	CHECK(cell(model, 1, CConflictListModel::Name) == QStringLiteral("a.bin"));
 	CHECK(cell(model, 2, CConflictListModel::Name) == QDir::toNativeSeparators(QStringLiteral("sub/b.bin")));
 	CHECK(cell(model, 0, CConflictListModel::Issue) == QStringLiteral("Folder exists"));
-	CHECK(cell(model, 3, CConflictListModel::Issue) == QStringLiteral("Type mismatch"));
-	CHECK(cell(model, 1, CConflictListModel::Source).contains(QStringLiteral("700")));
-	CHECK(cell(model, 1, CConflictListModel::Destination).contains(QStringLiteral("1970"))); // The timestamp is rendered
+	CHECK(cell(model, 3, CConflictListModel::Issue) == QStringLiteral("Type mismatch: folder → file"));
+	CHECK(cell(model, 1, CConflictListModel::SourceSize).contains(QStringLiteral("700")));
+	CHECK(cell(model, 1, CConflictListModel::DestinationSize).contains(QStringLiteral("50")));
+	CHECK(cell(model, 0, CConflictListModel::SourceSize).isEmpty()); // A folder has no size
+	CHECK(cell(model, 1, CConflictListModel::DestinationModified).endsWith(QStringLiteral(":40"))); // 1000 s past the epoch, to the second
 	CHECK(cell(model, 1, CConflictListModel::Action).isEmpty());
+	CHECK(model.data(model.indexOf(1, CConflictListModel::SourceSize), Qt::TextAlignmentRole).value<Qt::Alignment>().testFlag(Qt::AlignRight));
 
 	CHECK(model.unansweredCount() == 5);
 	CHECK(dialog.findChild<QLabel*>(QStringLiteral("lblSummary"))->text().contains(QStringLiteral("5")));
