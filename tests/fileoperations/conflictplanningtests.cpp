@@ -64,6 +64,12 @@ TEST_CASE("conflict planning: a planned answer applies to the same situation onl
 
 	SECTION("the row carries both entries and their times")
 	{
+		// An old destination time keeps the two sides distinct: swapped times fail the checks.
+		REQUIRE(setEntryTimes(base % "/dest/a.bin", { .creation = {}, .last_access = {}, .last_write = thin_io::timestamp{ .seconds = 1'500'000'000 } }));
+		// The replace overwrites the destination, so its expected time is read before the run.
+		const int64_t sourceSeconds = entryLastWriteSeconds(base % "/a.bin");
+		const int64_t destinationSeconds = entryLastWriteSeconds(base % "/dest/a.bin");
+
 		script.decisions = { act(DecisionAction::Replace) };
 		const auto summary = runCopy(script, { base % "/a.bin" }, DestinationIntent::IntoDirectory, base % "/dest");
 
@@ -75,8 +81,8 @@ TEST_CASE("conflict planning: a planned answer applies to the same situation onl
 		CHECK(row.issue.source.path == ep(base % "/a.bin"));
 		REQUIRE(row.issue.destination.has_value());
 		CHECK(row.issue.destination->path == ep(base % "/dest/a.bin"));
-		CHECK(row.sourceLastWrite.seconds == entryLastWriteSeconds(base % "/a.bin"));
-		CHECK(row.destinationLastWrite.seconds == entryLastWriteSeconds(base % "/dest/a.bin"));
+		CHECK(row.sourceLastWrite.seconds == sourceSeconds);
+		CHECK(row.destinationLastWrite.seconds == destinationSeconds);
 		CHECK(!row.resolution.has_value());
 		CHECK(!row.renameTargetTakenByAnotherItem);
 		CHECK(readFileContents(base % "/dest/a.bin") == patternedContents(300));
