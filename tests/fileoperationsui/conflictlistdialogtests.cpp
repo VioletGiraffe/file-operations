@@ -475,6 +475,76 @@ TEST_CASE("conflict list: the whole-plan buttons merge every folder and start wh
 	}
 }
 
+TEST_CASE("conflict list: a single existing file can be renamed from the compact view", "[conflictlist]")
+{
+	const ConflictPlan singleFile{ mergePlan()[4] };
+
+	SECTION("Replace, Skip and Rename; the new name starts the operation")
+	{
+		TestListDialog dialog{ singleFile, PromptOperation::Copy };
+		CHECK(shown(dialog, "btnQuickRename"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->text() == QStringLiteral("Replace"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnSkipAll"))->text() == QStringLiteral("Skip"));
+
+		dialog.nextName = QStringLiteral("other (2).bin");
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnQuickRename"); });
+		REQUIRE(resolutions.has_value());
+		REQUIRE(resolutions->size() == 1);
+		CHECK((*resolutions)[0]->action == DecisionAction::Rename);
+		CHECK((*resolutions)[0]->newName == QStringLiteral("other (2).bin"));
+	}
+
+	SECTION("backing out of the name keeps the dialog open")
+	{
+		TestListDialog dialog{ singleFile, PromptOperation::Copy };
+		dialog.nextName.reset();
+		click(dialog, "btnQuickRename");
+		CHECK(dialog.result() != QDialog::Accepted);
+		CHECK(!dialog.model().resolution(0).has_value());
+	}
+
+	SECTION("two top-level entries: no quick rename")
+	{
+		TestListDialog dialog{ replaceablePlan(), PromptOperation::Copy };
+		CHECK(!shown(dialog, "btnQuickRename"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->text() == QStringLiteral("Replace all"));
+	}
+}
+
+TEST_CASE("conflict list: a single existing folder can be renamed from the compact view", "[conflictlist]")
+{
+	SECTION("nothing inside conflicts: Merge or Rename")
+	{
+		TestListDialog dialog{ ConflictPlan{ mergePlan()[0] }, PromptOperation::Copy };
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->text() == QStringLiteral("Merge"));
+		CHECK(shown(dialog, "btnQuickRename"));
+
+		dialog.nextName = QStringLiteral("src (2)");
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnQuickRename"); });
+		REQUIRE(resolutions.has_value());
+		REQUIRE(resolutions->size() == 1);
+		CHECK((*resolutions)[0]->action == DecisionAction::Rename);
+		CHECK((*resolutions)[0]->newName == QStringLiteral("src (2)"));
+	}
+
+	SECTION("rows inside: the rename answers them too")
+	{
+		ConflictPlan plan = mergePlan();
+		plan.pop_back(); // other.bin, the second top-level entry
+		TestListDialog dialog{ std::move(plan), PromptOperation::Copy };
+		CHECK(shown(dialog, "btnQuickRename"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->text() == QStringLiteral("Replace all"));
+
+		dialog.nextName = QStringLiteral("src (2)");
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnQuickRename"); });
+		REQUIRE(resolutions.has_value());
+		REQUIRE(resolutions->size() == 4);
+		CHECK((*resolutions)[0]->action == DecisionAction::Rename);
+		for (const size_t childRow : { size_t{ 1 }, size_t{ 2 }, size_t{ 3 } })
+			CHECK(!(*resolutions)[childRow].has_value()); // Under the renamed root: no answer applies
+	}
+}
+
 TEST_CASE("conflict list: rows a whole-plan button cannot answer are left selected in the list", "[conflictlist]")
 {
 	SECTION("Replace all and a type mismatch")
