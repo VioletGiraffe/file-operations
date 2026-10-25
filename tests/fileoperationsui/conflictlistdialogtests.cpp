@@ -1,5 +1,5 @@
-// The conflict list dialog: the compact summary and its whole-plan answers, the plan as a tree, bulk answers over a
-// selection, renames, rows under a skipped or renamed root, the selection helpers, and the returned resolutions.
+// The conflict list dialog: the compact summary and its whole-plan answers, the plan as a tree, bulk answers over a selection,
+// renames, rows under a skipped or renamed root, the selection helpers, the row context menu, and the returned resolutions.
 
 #include "fileoperationsui/cconflictlistdialog.h"
 #include "fileoperationsui/cconflictlistmodel.h"
@@ -13,8 +13,10 @@ DISABLE_COMPILER_WARNINGS
 #include "qtcore_helpers/catch_qt.hpp" // qtutils
 
 #include <QAction>
+#include <QClipboard>
 #include <QDir>
 #include <QFont>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
@@ -90,6 +92,7 @@ class TestListDialog final : public CConflictListDialog
 {
 public:
 	using CConflictListDialog::CConflictListDialog;
+	using CConflictListDialog::addRowActions;
 
 	std::optional<QString> nextName; // What the rename box "types"; nullopt backs out
 
@@ -345,6 +348,50 @@ TEST_CASE("conflict list: cancelling returns no resolutions", "[conflictlist]")
 
 	const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnCancelOperation"); });
 	CHECK(!resolutions.has_value());
+}
+
+TEST_CASE("conflict list: a row's context menu shows or copies each side's full path", "[conflictlist]")
+{
+	const auto entryTexts = [](const QMenu& menu) {
+		QStringList texts;
+		for (const QAction* action : menu.actions())
+		{
+			if (!action->isSeparator())
+				texts.push_back(action->text());
+		}
+		return texts;
+	};
+
+	SECTION("both sides")
+	{
+		TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
+		QMenu menu;
+		dialog.addRowActions(menu, 1);
+		const QStringList texts = entryTexts(menu);
+		REQUIRE(texts.size() == 4);
+		CHECK(texts[0].contains(QStringLiteral(" source in "))); // The verb and the file manager vary by platform
+		CHECK(texts[2].contains(QStringLiteral(" destination in ")));
+
+		QClipboard* clipboard = QGuiApplication::clipboard();
+		const QString previousClipboardText = clipboard->text();
+		for (QAction* action : menu.actions())
+		{
+			if (action->text() == QStringLiteral("Copy full destination path"))
+				action->trigger();
+		}
+		CHECK(clipboard->text() == QDir::toNativeSeparators(testPath("dest/src/a.bin")));
+		clipboard->setText(previousClipboardText);
+	}
+
+	SECTION("no destination: source entries only")
+	{
+		const ConflictPlan plan{ conflict(IssueKind::UnsupportedEntry, snapshot("pipe", OperationEntryKind::Other), std::nullopt) };
+		TestListDialog dialog{ plan, PromptOperation::Copy };
+		QMenu menu;
+		dialog.addRowActions(menu, 0);
+		CHECK(entryTexts(menu).size() == 2);
+		CHECK(entryTexts(menu).contains(QStringLiteral("Copy full source path")));
+	}
 }
 
 TEST_CASE("conflict list: a fresh plan with existing entries opens compact, others open the list", "[conflictlist]")

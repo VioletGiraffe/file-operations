@@ -6,6 +6,8 @@
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
+#include "utils/displayformatting.h"
+#include "utils/filemanager.h"
 
 
 DISABLE_COMPILER_WARNINGS
@@ -13,6 +15,9 @@ DISABLE_COMPILER_WARNINGS
 
 #include "ui_cconflictlistdialog.h"
 
+#include <QClipboard>
+#include <QDir>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QItemSelection>
@@ -95,6 +100,15 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 	createSelectionMenu();
 
 	connect(ui->conflictsView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &CConflictListDialog::updateSummaryAndButtons);
+	ui->conflictsView->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(ui->conflictsView, &QWidget::customContextMenuRequested, this, [this](const QPoint& viewportPosition) {
+		const QModelIndex index = ui->conflictsView->indexAt(viewportPosition);
+		if (!index.isValid())
+			return;
+		QMenu menu{ this };
+		addRowActions(menu, _model.planRow(index));
+		menu.exec(ui->conflictsView->viewport()->mapToGlobal(viewportPosition));
+	});
 	connect(ui->btnStart, &QPushButton::clicked, this, &QDialog::accept);
 	connect(ui->btnCancelOperation, &QPushButton::clicked, this, &QDialog::reject);
 	connect(ui->btnShowList, &QPushButton::clicked, this, &CConflictListDialog::showList);
@@ -167,6 +181,31 @@ std::optional<QString> CConflictListDialog::askNewName(const QString& currentNam
 	if (!accepted)
 		return {};
 	return name;
+}
+
+void CConflictListDialog::addRowActions(QMenu& menu, const size_t planRow)
+{
+	const auto addEntryActions = [&](const CEntryPath& path, const QString& revealText, const QString& copyText) {
+		const QString nativePath = QDir::toNativeSeparators(path.value());
+		menu.addAction(revealText, this, [this, nativePath] {
+			// The plan lists a link as an entry of its own
+			if (!revealInFileManager(nativePath, LinkHandling::NoFollow))
+				QMessageBox::warning(this, tr("File not found"), tr("This file or folder no longer exists:\n%1").arg(nativePath));
+		});
+		menu.addAction(copyText, this, [nativePath] { QGuiApplication::clipboard()->setText(nativePath); });
+	};
+
+	const OperationIssue& issue = _model.conflict(planRow).issue;
+	addEntryActions(issue.source.path,
+		textForPlatform<QString>(tr("Open source in Explorer"), tr("Reveal source in Finder"), tr("Show source in file manager")),
+		tr("Copy full source path"));
+	if (issue.destination)
+	{
+		menu.addSeparator();
+		addEntryActions(issue.destination->path,
+			textForPlatform<QString>(tr("Open destination in Explorer"), tr("Reveal destination in Finder"), tr("Show destination in file manager")),
+			tr("Copy full destination path"));
+	}
 }
 
 void CConflictListDialog::createActionButtons()

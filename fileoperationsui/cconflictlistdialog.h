@@ -49,6 +49,8 @@ public:
 protected:
 	// The new name for the one selected row; nullopt = backed out. A test overrides this to answer without a modal box.
 	[[nodiscard]] virtual std::optional<QString> askNewName(const QString& currentName);
+	// Fills a row's context menu; separate from showing it so a test can trigger the entries.
+	void addRowActions(QMenu& menu, size_t planRow);
 
 private:
 	void createActionButtons();
