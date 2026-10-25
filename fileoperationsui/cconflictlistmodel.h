@@ -11,10 +11,25 @@
 
 DISABLE_COMPILER_WARNINGS
 #include <QAbstractItemModel>
+#include <QIcon>
 RESTORE_COMPILER_WARNINGS
 
 #include <optional>
 #include <vector>
+
+// A FileReplacement row's destination against its source. Times compare to the second, the resolution the list shows.
+enum class SideComparison
+{
+	DestinationOlder,
+	DestinationNewer,
+	SameSizeAndTime,
+	SizeDiffers, // Same time
+	TimeUnknown
+};
+
+// Requires a FileReplacement row.
+[[nodiscard]] SideComparison compareSides(const PlannedConflict& conflict);
+[[nodiscard]] QString sideComparisonText(SideComparison comparison);
 
 // The plan as a two-level tree: a row whose source lies under an earlier directory row's source is that row's child,
 // every other row is top-level. Holds the resolutions as the user sets them. A row is applicable while its parent row
@@ -25,7 +40,7 @@ public:
 	enum Column
 	{
 		Name,
-		Issue,
+		Conflict,
 		SourceSize,
 		SourceModified,
 		DestinationSize,
@@ -71,9 +86,12 @@ private:
 	};
 
 	[[nodiscard]] QString nameText(const Row& row) const;
-	[[nodiscard]] QString actionText(const Row& row) const;
+	[[nodiscard]] QString actionText(size_t planRow) const;
 
 	std::vector<Row> _rows;
 	std::vector<size_t> _topLevelRows;
 	const PromptOperation _operation;
+	const QIcon _fileIcon;
+	const QIcon _folderIcon;
+	const QIcon _unansweredIcon;
 };

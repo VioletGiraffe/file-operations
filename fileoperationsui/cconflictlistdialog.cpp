@@ -17,9 +17,12 @@ DISABLE_COMPILER_WARNINGS
 #include <QInputDialog>
 #include <QItemSelection>
 #include <QItemSelectionModel>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPoint>
 #include <QPushButton>
+#include <QRect>
 RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
@@ -65,15 +68,27 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 
 	switch (_operation)
 	{
-	case PromptOperation::Copy: setWindowTitle(tr("Copy: conflicts")); break;
-	case PromptOperation::Move: setWindowTitle(tr("Move: conflicts")); break;
-	case PromptOperation::Delete: setWindowTitle(tr("Delete: conflicts")); break;
+	case PromptOperation::Copy:
+		setWindowTitle(tr("Copy: conflicts"));
+		ui->btnStart->setText(tr("Copy"));
+		break;
+	case PromptOperation::Move:
+		setWindowTitle(tr("Move: conflicts"));
+		ui->btnStart->setText(tr("Move"));
+		break;
+	case PromptOperation::Delete:
+		setWindowTitle(tr("Delete: conflicts"));
+		ui->btnStart->setText(tr("Delete"));
+		break;
 	}
 
 	ui->conflictsView->setModel(&_model);
 	ui->conflictsView->expandAll();
-	ui->conflictsView->header()->setStretchLastSection(true);
-	for (int column = 0; column < CConflictListModel::ColumnCount - 1; ++column)
+	// Name takes the width left by the other columns, so a deep relative path cannot push them out of view
+	ui->conflictsView->setTextElideMode(Qt::ElideMiddle);
+	ui->conflictsView->header()->setStretchLastSection(false);
+	ui->conflictsView->header()->setSectionResizeMode(CConflictListModel::Name, QHeaderView::Stretch);
+	for (int column = CConflictListModel::Name + 1; column < CConflictListModel::ColumnCount; ++column)
 		ui->conflictsView->resizeColumnToContents(column);
 
 	createActionButtons();
@@ -82,9 +97,55 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 	connect(ui->conflictsView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &CConflictListDialog::updateSummaryAndButtons);
 	connect(ui->btnStart, &QPushButton::clicked, this, &QDialog::accept);
 	connect(ui->btnCancelOperation, &QPushButton::clicked, this, &QDialog::reject);
-	ui->btnStart->setDefault(true);
+	connect(ui->btnShowList, &QPushButton::clicked, this, &CConflictListDialog::showList);
+	connect(ui->btnReplaceAll, &QPushButton::clicked, this, [this] {
+		answerAllAndStart([](const PlannedConflict&) { return DecisionAction::Replace; });
+	});
+	connect(ui->btnReplaceOlder, &QPushButton::clicked, this, [this] {
+		answerAllAndStart([](const PlannedConflict& conflict) -> std::optional<DecisionAction> {
+			// Only the times decide: an unknown time, or the same time with a different size, is left for the user
+			switch (compareSides(conflict))
+			{
+			case SideComparison::DestinationOlder: return DecisionAction::Replace;
+			case SideComparison::DestinationNewer:
+			case SideComparison::SameSizeAndTime: return DecisionAction::Skip;
+			case SideComparison::SizeDiffers:
+			case SideComparison::TimeUnknown: return {};
+			}
+			return {};
+		});
+	});
+	connect(ui->btnSkipAll, &QPushButton::clicked, this, [this] {
+		answerAllAndStart([](const PlannedConflict&) { return DecisionAction::Skip; });
+	});
 
 	updateSummaryAndButtons();
+
+	_listSize = size();
+	const auto planHasKind = [this](const IssueKind kind) {
+		return anyPlanRow([this, kind](const size_t planRow) { return _model.conflict(planRow).issue.kind == kind; });
+	};
+	const bool anyReplacement = planHasKind(IssueKind::FileReplacement);
+	// A re-presented plan carries answers given in the list, so it reopens there
+	const bool represented = anyPlanRow([this](const size_t planRow) { return _model.conflict(planRow).resolution.has_value(); });
+	if ((!anyReplacement && !planHasKind(IssueKind::RootDirectoryMerge)) || represented)
+	{
+		showList();
+		return;
+	}
+
+	createBreakdown();
+	ui->listPanel->hide();
+	ui->btnStart->hide();
+	if (!anyReplacement)
+	{
+		ui->btnReplaceAll->setText(tr("Merge"));
+		ui->btnReplaceOlder->hide();
+		ui->btnSkipAll->hide();
+	}
+	ui->btnReplaceAll->setDefault(true);
+	ui->btnReplaceAll->setFocus(); // An autoDefault button with focus would take Enter instead
+	adjustSize();
 }
 
 CConflictListDialog::~CConflictListDialog()
@@ -112,10 +173,7 @@ void CConflictListDialog::createActionButtons()
 {
 	for (const DecisionAction action : plannableActionOrder)
 	{
-		bool anyRowAllows = false;
-		for (size_t i = 0; i < _model.rowsTotal() && !anyRowAllows; ++i)
-			anyRowAllows = actionAllowed(_model.conflict(i).issue.kind, action);
-		if (!anyRowAllows)
+		if (!anyPlanRow([this, action](const size_t planRow) { return actionAllowed(_model.conflict(planRow).issue.kind, action); }))
 			continue;
 
 		auto* button = new QPushButton{ fileOperationActionLabel(action, _operation), this };
@@ -135,48 +193,128 @@ void CConflictListDialog::createActionButtons()
 void CConflictListDialog::createSelectionMenu()
 {
 	_selectionMenu = new QMenu{ this };
-	_selectionMenu->addAction(tr("All"), this, [this] { selectRows([](const PlannedConflict&) { return true; }); });
+	_selectionMenu->addAction(tr("All"), this, [this] { selectRows([](size_t) { return true; }); });
 
-	// One entry per kind present, in the kinds' declaration order.
+	// One entry per kind present, then per comparison present, in declaration order.
 	for (const IssueKind kind : magic_enum::enum_values<IssueKind>())
 	{
-		bool present = false;
-		for (size_t i = 0; i < _model.rowsTotal() && !present; ++i)
-			present = _model.conflict(i).issue.kind == kind;
-		if (present)
-			_selectionMenu->addAction(tr("All: %1").arg(fileOperationIssueKindText(kind)), this, [this, kind] {
-				selectRows([kind](const PlannedConflict& conflict) { return conflict.issue.kind == kind; });
-			});
+		const auto hasKind = [this, kind](const size_t planRow) { return _model.conflict(planRow).issue.kind == kind; };
+		if (anyPlanRow(hasKind))
+			_selectionMenu->addAction(tr("All: %1").arg(fileOperationIssueKindText(kind)), this, [this, hasKind] { selectRows(hasKind); });
 	}
 
-	bool anyReplacement = false;
-	for (size_t i = 0; i < _model.rowsTotal() && !anyReplacement; ++i)
-		anyReplacement = _model.conflict(i).issue.kind == IssueKind::FileReplacement;
-	if (anyReplacement)
+	bool separatorAdded = false;
+	for (const SideComparison comparison : magic_enum::enum_values<SideComparison>())
 	{
-		_selectionMenu->addSeparator();
-		_selectionMenu->addAction(tr("Destination older than source"), this, [this] {
-			selectRows([](const PlannedConflict& conflict) {
-				return conflict.issue.kind == IssueKind::FileReplacement && conflict.sourceLastWrite.is_set() && conflict.destinationLastWrite.is_set()
-					&& conflict.destinationLastWrite.seconds < conflict.sourceLastWrite.seconds;
-			});
-		});
-		_selectionMenu->addAction(tr("Destination newer than source"), this, [this] {
-			selectRows([](const PlannedConflict& conflict) {
-				return conflict.issue.kind == IssueKind::FileReplacement && conflict.sourceLastWrite.is_set() && conflict.destinationLastWrite.is_set()
-					&& conflict.destinationLastWrite.seconds > conflict.sourceLastWrite.seconds;
-			});
-		});
-		_selectionMenu->addAction(tr("Same size and time"), this, [this] {
-			selectRows([](const PlannedConflict& conflict) {
-				return conflict.issue.kind == IssueKind::FileReplacement && conflict.issue.destination
-					&& conflict.issue.destination->size == conflict.issue.source.size
-					&& conflict.sourceLastWrite.is_set() && conflict.destinationLastWrite == conflict.sourceLastWrite;
-			});
-		});
+		const auto comparesAs = [this, comparison](const size_t planRow) {
+			const PlannedConflict& conflict = _model.conflict(planRow);
+			return conflict.issue.kind == IssueKind::FileReplacement && compareSides(conflict) == comparison;
+		};
+		if (!anyPlanRow(comparesAs))
+			continue;
+
+		if (!separatorAdded)
+		{
+			_selectionMenu->addSeparator();
+			separatorAdded = true;
+		}
+		_selectionMenu->addAction(sideComparisonText(comparison), this, [this, comparesAs] { selectRows(comparesAs); });
 	}
 
 	ui->btnSelect->setMenu(_selectionMenu);
+}
+
+void CConflictListDialog::createBreakdown()
+{
+	std::array<size_t, magic_enum::enum_count<IssueKind>()> kindCounts{};
+	std::array<size_t, magic_enum::enum_count<SideComparison>()> comparisonCounts{};
+	for (size_t i = 0; i < _model.rowsTotal(); ++i)
+	{
+		const PlannedConflict& conflict = _model.conflict(i);
+		++kindCounts[static_cast<size_t>(conflict.issue.kind)];
+		if (conflict.issue.kind == IssueKind::FileReplacement)
+			++comparisonCounts[static_cast<size_t>(compareSides(conflict))];
+	}
+
+	int gridRow = 0;
+	const auto addLine = [&](const size_t count, const QString& text) {
+		if (count == 0)
+			return;
+		auto* countLabel = new QLabel{ QString::number(count), ui->compactPanel };
+		countLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		ui->breakdownLayout->addWidget(countLabel, gridRow, 0);
+		ui->breakdownLayout->addWidget(new QLabel{ text, ui->compactPanel }, gridRow, 1);
+		++gridRow;
+	};
+
+	for (const SideComparison comparison : magic_enum::enum_values<SideComparison>())
+		addLine(comparisonCounts[static_cast<size_t>(comparison)], sideComparisonText(comparison));
+	addLine(kindCounts[static_cast<size_t>(IssueKind::RootDirectoryMerge)], fileOperationIssueKindText(IssueKind::RootDirectoryMerge));
+
+	bool headingAdded = false;
+	for (const IssueKind kind : magic_enum::enum_values<IssueKind>())
+	{
+		if (kind == IssueKind::FileReplacement || kind == IssueKind::RootDirectoryMerge || kindCounts[static_cast<size_t>(kind)] == 0)
+			continue;
+
+		if (!headingAdded)
+		{
+			ui->breakdownLayout->addWidget(new QLabel{ tr("Left for you to decide in the list:"), ui->compactPanel }, gridRow++, 0, 1, 2);
+			headingAdded = true;
+		}
+		addLine(kindCounts[static_cast<size_t>(kind)], fileOperationIssueKindText(kind));
+	}
+	ui->breakdownLayout->setColumnStretch(1, 1);
+}
+
+void CConflictListDialog::answerAllAndStart(const std::function<std::optional<DecisionAction>(const PlannedConflict&)>& fileAnswer)
+{
+	for (size_t i = 0; i < _model.rowsTotal(); ++i)
+	{
+		const PlannedConflict& conflict = _model.conflict(i);
+		std::optional<DecisionAction> action;
+		if (conflict.issue.kind == IssueKind::RootDirectoryMerge)
+			action = DecisionAction::Merge;
+		else if (conflict.issue.kind == IssueKind::FileReplacement)
+			action = fileAnswer(conflict);
+
+		if (action)
+			_model.setResolution(i, Decision{ *action });
+	}
+
+	if (_model.unansweredCount() == 0)
+	{
+		accept();
+		return;
+	}
+
+	showList();
+	selectRows([this](const size_t planRow) { return !_model.isAnswered(planRow); });
+	updateSummaryAndButtons();
+}
+
+void CConflictListDialog::showList()
+{
+	ui->compactPanel->hide();
+	ui->btnShowList->hide();
+	ui->btnReplaceAll->hide();
+	ui->btnReplaceOlder->hide();
+	ui->btnSkipAll->hide();
+	ui->btnReplaceAll->setDefault(false);
+	ui->listPanel->show();
+	ui->btnStart->show();
+	ui->btnStart->setDefault(true);
+	ui->conflictsView->setFocus();
+
+	if (!isVisible())
+		return;
+
+	// Grows from compact around the same centre
+	const QRect frame = frameGeometry();
+	const QSize newSize = _listSize.expandedTo(size());
+	const QSize newFrameSize = newSize + frame.size() - size();
+	resize(newSize);
+	move(frame.center() - QPoint{ newFrameSize.width() / 2, newFrameSize.height() / 2 });
 }
 
 void CConflictListDialog::applyActionToSelection(const DecisionAction action)
@@ -216,15 +354,17 @@ void CConflictListDialog::renameSelectedRow()
 	updateSummaryAndButtons();
 }
 
-void CConflictListDialog::selectRows(const std::function<bool(const PlannedConflict&)>& predicate)
+void CConflictListDialog::selectRows(const std::function<bool(size_t planRow)>& predicate)
 {
 	QItemSelection selection;
 	for (size_t i = 0; i < _model.rowsTotal(); ++i)
 	{
-		if (_model.isApplicable(i) && predicate(_model.conflict(i)))
+		if (_model.isApplicable(i) && predicate(i))
 			selection.select(_model.indexOf(i, 0), _model.indexOf(i, CConflictListModel::ColumnCount - 1));
 	}
 	ui->conflictsView->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+	if (!selection.isEmpty())
+		ui->conflictsView->scrollTo(selection.first().topLeft());
 }
 
 void CConflictListDialog::updateSummaryAndButtons()
@@ -254,4 +394,14 @@ std::vector<size_t> CConflictListDialog::selectedPlanRows() const
 			rows.push_back(_model.planRow(index));
 	}
 	return rows;
+}
+
+bool CConflictListDialog::anyPlanRow(const std::function<bool(size_t planRow)>& predicate) const
+{
+	for (size_t i = 0; i < _model.rowsTotal(); ++i)
+	{
+		if (predicate(i))
+			return true;
+	}
+	return false;
 }

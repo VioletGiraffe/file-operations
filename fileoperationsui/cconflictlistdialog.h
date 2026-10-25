@@ -12,6 +12,7 @@
 
 DISABLE_COMPILER_WARNINGS
 #include <QDialog>
+#include <QSize>
 RESTORE_COMPILER_WARNINGS
 
 #include <functional>
@@ -26,9 +27,11 @@ class CConflictListDialog;
 class QMenu;
 class QPushButton;
 
-// The conflict plan as one list: every row answered before the operation starts. Action buttons apply to the selected
-// rows that allow the action; the Select menu picks rows by kind or by how the two sides compare. Start is enabled
-// only once every applicable row has an answer. It knows nothing of the job.
+// The conflict plan: every row answered before the operation starts. It knows nothing of the job.
+// A fresh plan with existing files or folders opens compact: a breakdown by kind and comparison, and buttons that answer
+// the whole plan and start. Rows such a button cannot answer are left selected in the list.
+// In the list, action buttons apply to the selected rows that allow the action; the Select menu picks rows by kind or
+// by how the two sides compare. Start is enabled only once every applicable row has an answer.
 class CConflictListDialog : public QDialog
 {
 public:
@@ -50,18 +53,26 @@ protected:
 private:
 	void createActionButtons();
 	void createSelectionMenu();
+	void createBreakdown();
+
+	// Merges every folder and gives every file replacement fileAnswer's action; nullopt leaves the row unanswered.
+	// Starts when no row is left unanswered, otherwise shows the list with those rows selected.
+	void answerAllAndStart(const std::function<std::optional<DecisionAction>(const PlannedConflict&)>& fileAnswer);
+	void showList();
 
 	void applyActionToSelection(DecisionAction action);
 	void renameSelectedRow();
-	// Selects the applicable rows the predicate accepts, and nothing else.
-	void selectRows(const std::function<bool(const PlannedConflict&)>& predicate);
+	// Selects the applicable rows the predicate accepts, and nothing else, and scrolls to the first.
+	void selectRows(const std::function<bool(size_t planRow)>& predicate);
 
 	void updateSummaryAndButtons();
 	[[nodiscard]] std::vector<size_t> selectedPlanRows() const;
+	[[nodiscard]] bool anyPlanRow(const std::function<bool(size_t planRow)>& predicate) const;
 
 	Ui::CConflictListDialog* ui;
 	CConflictListModel _model;
 	const PromptOperation _operation;
+	QSize _listSize; // The list's initial size, from the form
 	QMenu* _selectionMenu = nullptr;
 	std::vector<std::pair<DecisionAction, QPushButton*>> _actionButtons;
 };

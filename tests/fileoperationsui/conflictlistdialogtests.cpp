@@ -1,5 +1,5 @@
-// The conflict list dialog: the plan as a tree, bulk answers over a selection, renames, rows under a skipped or renamed
-// root, the selection helpers, and the returned resolutions.
+// The conflict list dialog: the compact summary and its whole-plan answers, the plan as a tree, bulk answers over a
+// selection, renames, rows under a skipped or renamed root, the selection helpers, and the returned resolutions.
 
 #include "fileoperationsui/cconflictlistdialog.h"
 #include "fileoperationsui/cconflictlistmodel.h"
@@ -14,12 +14,15 @@ DISABLE_COMPILER_WARNINGS
 
 #include <QAction>
 #include <QDir>
+#include <QFont>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
 #include <QStringBuilder>
+#include <QStringList>
 #include <QTimer>
 #include <QTreeView>
+#include <QWidget>
 RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
@@ -66,6 +69,21 @@ ConflictPlan mergePlan()
 		conflict(TypeMismatch, snapshot("src/c", Directory), snapshot("dest/src/c", RegularFile, 10), 1000, 1000),
 		conflict(FileReplacement, snapshot("other.bin", RegularFile, 100), snapshot("dest/other.bin", RegularFile, 100), 5000, 5000),
 	};
+}
+
+// mergePlan() without the type mismatch: every row is a folder merge or a file replacement.
+ConflictPlan replaceablePlan()
+{
+	ConflictPlan plan = mergePlan();
+	plan.erase(plan.begin() + 3);
+	return plan;
+}
+
+bool shown(CConflictListDialog& dialog, const char* widgetName)
+{
+	auto* widget = dialog.findChild<QWidget*>(QLatin1String(widgetName));
+	REQUIRE(widget != nullptr);
+	return widget->isVisibleTo(&dialog);
 }
 
 class TestListDialog final : public CConflictListDialog
@@ -157,13 +175,18 @@ TEST_CASE("conflict list: the plan is a tree of roots and their descendants", "[
 	CHECK(cell(model, 0, CConflictListModel::Name) == QStringLiteral("src"));
 	CHECK(cell(model, 1, CConflictListModel::Name) == QStringLiteral("a.bin"));
 	CHECK(cell(model, 2, CConflictListModel::Name) == QDir::toNativeSeparators(QStringLiteral("sub/b.bin")));
-	CHECK(cell(model, 0, CConflictListModel::Issue) == QStringLiteral("Folder exists"));
-	CHECK(cell(model, 3, CConflictListModel::Issue) == QStringLiteral("Type mismatch: folder → file"));
+	CHECK(cell(model, 0, CConflictListModel::Conflict) == QStringLiteral("Folder exists"));
+	CHECK(cell(model, 1, CConflictListModel::Conflict) == QStringLiteral("Destination older"));
+	CHECK(cell(model, 2, CConflictListModel::Conflict) == QStringLiteral("Destination newer"));
+	CHECK(cell(model, 3, CConflictListModel::Conflict) == QStringLiteral("Type mismatch: folder → file"));
+	CHECK(cell(model, 4, CConflictListModel::Conflict) == QStringLiteral("Same size and time"));
+	CHECK(model.data(model.indexOf(1, CConflictListModel::SourceModified), Qt::FontRole).value<QFont>().bold()); // The newer side
+	CHECK(!model.data(model.indexOf(1, CConflictListModel::DestinationModified), Qt::FontRole).isValid());
 	CHECK(cell(model, 1, CConflictListModel::SourceSize).contains(QStringLiteral("700")));
 	CHECK(cell(model, 1, CConflictListModel::DestinationSize).contains(QStringLiteral("50")));
 	CHECK(cell(model, 0, CConflictListModel::SourceSize).isEmpty()); // A folder has no size
 	CHECK(cell(model, 1, CConflictListModel::DestinationModified).endsWith(QStringLiteral(":40"))); // 1000 s past the epoch, to the second
-	CHECK(cell(model, 1, CConflictListModel::Action).isEmpty());
+	CHECK(cell(model, 1, CConflictListModel::Action) == QStringLiteral("Choose an action"));
 	CHECK(model.data(model.indexOf(1, CConflictListModel::SourceSize), Qt::TextAlignmentRole).value<Qt::Alignment>().testFlag(Qt::AlignRight));
 
 	CHECK(model.unansweredCount() == 5);
@@ -179,6 +202,7 @@ TEST_CASE("conflict list: actions apply to the selected rows that allow them", "
 {
 	TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
 	const CConflictListModel& model = dialog.model();
+	click(dialog, "btnShowList");
 
 	CHECK(!buttonEnabled(dialog, "btnReplace")); // Nothing selected
 	selectPlanRows(dialog, { 1, 2, 3 });
@@ -215,6 +239,7 @@ TEST_CASE("conflict list: rows under a skipped or renamed root need no answer", 
 {
 	TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
 	const CConflictListModel& model = dialog.model();
+	click(dialog, "btnShowList");
 
 	SECTION("a skipped root")
 	{
@@ -262,6 +287,7 @@ TEST_CASE("conflict list: renaming", "[conflictlist]")
 	SECTION("one selected row takes a new name; several cannot")
 	{
 		TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
+		click(dialog, "btnShowList");
 		selectPlanRows(dialog, { 1, 2 });
 		CHECK(!buttonEnabled(dialog, "btnRename"));
 
@@ -297,11 +323,12 @@ TEST_CASE("conflict list: renaming", "[conflictlist]")
 TEST_CASE("conflict list: the selection helpers pick rows by how the two sides compare", "[conflictlist]")
 {
 	TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
+	click(dialog, "btnShowList");
 
-	triggerSelectionMenuEntry(dialog, QStringLiteral("Destination older than source"));
+	triggerSelectionMenuEntry(dialog, QStringLiteral("Destination older"));
 	CHECK(selectedPlanRows(dialog) == std::vector<size_t>{ 1 });
 
-	triggerSelectionMenuEntry(dialog, QStringLiteral("Destination newer than source"));
+	triggerSelectionMenuEntry(dialog, QStringLiteral("Destination newer"));
 	CHECK(selectedPlanRows(dialog) == std::vector<size_t>{ 2 });
 
 	triggerSelectionMenuEntry(dialog, QStringLiteral("Same size and time"));
@@ -318,4 +345,125 @@ TEST_CASE("conflict list: cancelling returns no resolutions", "[conflictlist]")
 
 	const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnCancelOperation"); });
 	CHECK(!resolutions.has_value());
+}
+
+TEST_CASE("conflict list: a fresh plan with existing entries opens compact, others open the list", "[conflictlist]")
+{
+	SECTION("fresh: the breakdown and the whole-plan buttons")
+	{
+		TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
+		CHECK(shown(dialog, "compactPanel"));
+		CHECK(!shown(dialog, "listPanel"));
+		CHECK(!shown(dialog, "btnStart"));
+		CHECK(shown(dialog, "btnReplaceOlder"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->isDefault());
+
+		QStringList texts;
+		for (const QLabel* label : dialog.findChild<QWidget*>(QStringLiteral("compactPanel"))->findChildren<QLabel*>())
+			texts.push_back(label->text());
+		CHECK(texts.contains(QStringLiteral("Destination older")));
+		CHECK(texts.contains(QStringLiteral("Folder exists")));
+		CHECK(texts.contains(QStringLiteral("Type mismatch")));
+
+		click(dialog, "btnShowList");
+		CHECK(!shown(dialog, "compactPanel"));
+		CHECK(shown(dialog, "listPanel"));
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnStart"))->isDefault());
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnStart"))->text() == QStringLiteral("Copy"));
+	}
+
+	SECTION("re-presented: the answers given in the list")
+	{
+		ConflictPlan plan = mergePlan();
+		plan[1].resolution = Decision{ DecisionAction::Replace };
+		TestListDialog dialog{ std::move(plan), PromptOperation::Copy };
+		CHECK(shown(dialog, "listPanel"));
+		CHECK(!shown(dialog, "btnReplaceAll"));
+	}
+
+	SECTION("nothing the whole-plan buttons answer")
+	{
+		ConflictPlan plan = mergePlan();
+		TestListDialog dialog{ ConflictPlan{ plan[3] }, PromptOperation::Copy };
+		CHECK(shown(dialog, "listPanel"));
+		CHECK(!shown(dialog, "compactPanel"));
+	}
+}
+
+TEST_CASE("conflict list: the whole-plan buttons merge every folder and start when nothing is left", "[conflictlist]")
+{
+	SECTION("Replace all")
+	{
+		TestListDialog dialog{ replaceablePlan(), PromptOperation::Copy };
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnReplaceAll"); });
+		REQUIRE(resolutions.has_value());
+		REQUIRE(resolutions->size() == 4);
+		CHECK((*resolutions)[0]->action == DecisionAction::Merge);
+		for (const size_t fileRow : { size_t{ 1 }, size_t{ 2 }, size_t{ 3 } })
+			CHECK((*resolutions)[fileRow]->action == DecisionAction::Replace);
+	}
+
+	SECTION("Skip all")
+	{
+		TestListDialog dialog{ replaceablePlan(), PromptOperation::Copy };
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnSkipAll"); });
+		REQUIRE(resolutions.has_value());
+		REQUIRE(resolutions->size() == 4);
+		CHECK((*resolutions)[0]->action == DecisionAction::Merge);
+		for (const size_t fileRow : { size_t{ 1 }, size_t{ 2 }, size_t{ 3 } })
+			CHECK((*resolutions)[fileRow]->action == DecisionAction::Skip);
+	}
+
+	SECTION("only folders: one Merge button")
+	{
+		ConflictPlan plan = mergePlan();
+		TestListDialog dialog{ ConflictPlan{ plan[0] }, PromptOperation::Copy };
+		CHECK(dialog.findChild<QPushButton*>(QStringLiteral("btnReplaceAll"))->text() == QStringLiteral("Merge"));
+		CHECK(!shown(dialog, "btnReplaceOlder"));
+		CHECK(!shown(dialog, "btnSkipAll"));
+
+		const auto resolutions = askWith(dialog, [](CConflictListDialog& d) { click(d, "btnReplaceAll"); });
+		REQUIRE(resolutions.has_value());
+		CHECK((*resolutions)[0]->action == DecisionAction::Merge);
+	}
+}
+
+TEST_CASE("conflict list: rows a whole-plan button cannot answer are left selected in the list", "[conflictlist]")
+{
+	SECTION("Replace all and a type mismatch")
+	{
+		TestListDialog dialog{ mergePlan(), PromptOperation::Copy };
+		const CConflictListModel& model = dialog.model();
+		click(dialog, "btnReplaceAll");
+
+		CHECK(dialog.result() != QDialog::Accepted);
+		CHECK(shown(dialog, "listPanel"));
+		CHECK(model.resolution(0)->action == DecisionAction::Merge);
+		CHECK(model.resolution(1)->action == DecisionAction::Replace);
+		CHECK(!model.resolution(3).has_value());
+		CHECK(selectedPlanRows(dialog) == std::vector<size_t>{ 3 });
+		CHECK(!buttonEnabled(dialog, "btnStart"));
+	}
+
+	SECTION("Replace older: only the times decide")
+	{
+		using enum IssueKind;
+		using enum OperationEntryKind;
+		ConflictPlan plan = replaceablePlan();
+		plan.insert(plan.begin() + 3, conflict(FileReplacement, snapshot("src/d.bin", RegularFile, 10), snapshot("dest/src/d.bin", RegularFile, 20), 3000, 3000));
+		plan.insert(plan.begin() + 4, conflict(FileReplacement, snapshot("src/e.bin", RegularFile, 10), snapshot("dest/src/e.bin", RegularFile, 10), 3000, 0));
+
+		TestListDialog dialog{ std::move(plan), PromptOperation::Copy };
+		const CConflictListModel& model = dialog.model();
+		CHECK(cell(model, 3, CConflictListModel::Conflict) == QStringLiteral("Same time, different size"));
+		CHECK(cell(model, 4, CConflictListModel::Conflict) == QStringLiteral("Already exists, time unknown"));
+		click(dialog, "btnReplaceOlder");
+
+		CHECK(model.resolution(0)->action == DecisionAction::Merge);
+		CHECK(model.resolution(1)->action == DecisionAction::Replace); // Destination older
+		CHECK(model.resolution(2)->action == DecisionAction::Skip);    // Destination newer
+		CHECK(model.resolution(5)->action == DecisionAction::Skip);    // Same size and time
+		CHECK(selectedPlanRows(dialog) == std::vector<size_t>{ 3, 4 });
+		CHECK(cell(model, 2, CConflictListModel::Action) == QStringLiteral("Skip"));
+	}
 }

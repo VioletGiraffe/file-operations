@@ -8,16 +8,30 @@
 
 
 DISABLE_COMPILER_WARNINGS
+#include <QApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFileIconProvider>
+#include <QFont>
+#include <QPalette>
 #include <QStringBuilder>
+#include <QStyle>
 RESTORE_COMPILER_WARNINGS
 
 namespace
 {
 
-QString issueText(const OperationIssue& issue)
+bool isDirectoryLike(const OperationEntryKind kind) noexcept
 {
+	return kind == OperationEntryKind::Directory || kind == OperationEntryKind::DirectoryLink;
+}
+
+QString conflictText(const PlannedConflict& conflict)
+{
+	const OperationIssue& issue = conflict.issue;
+	if (issue.kind == IssueKind::FileReplacement)
+		return sideComparisonText(compareSides(conflict));
+
 	const QString kindText = fileOperationIssueKindText(issue.kind);
 	if (issue.kind != IssueKind::TypeMismatch || !issue.destination)
 		return kindText;
@@ -43,9 +57,40 @@ bool answeredSkipOrRename(const std::optional<Decision>& resolution) noexcept
 
 } // namespace
 
+SideComparison compareSides(const PlannedConflict& conflict)
+{
+	const OperationIssue& issue = conflict.issue;
+	assert_and_return_r(issue.kind == IssueKind::FileReplacement && issue.destination, SideComparison::TimeUnknown);
+
+	if (!conflict.sourceLastWrite.is_set() || !conflict.destinationLastWrite.is_set())
+		return SideComparison::TimeUnknown;
+	if (conflict.destinationLastWrite.seconds < conflict.sourceLastWrite.seconds)
+		return SideComparison::DestinationOlder;
+	if (conflict.destinationLastWrite.seconds > conflict.sourceLastWrite.seconds)
+		return SideComparison::DestinationNewer;
+	return issue.destination->size == issue.source.size ? SideComparison::SameSizeAndTime : SideComparison::SizeDiffers;
+}
+
+QString sideComparisonText(const SideComparison comparison)
+{
+	using enum SideComparison;
+	switch (comparison)
+	{
+	case DestinationOlder: return QObject::tr("Destination older");
+	case DestinationNewer: return QObject::tr("Destination newer");
+	case SameSizeAndTime: return QObject::tr("Same size and time");
+	case SizeDiffers: return QObject::tr("Same time, different size");
+	case TimeUnknown: return QObject::tr("Already exists, time unknown");
+	}
+	return {};
+}
+
 CConflictListModel::CConflictListModel(ConflictPlan plan, const PromptOperation operation, QObject* parent)
 	: QAbstractItemModel{ parent }
 	, _operation{ operation }
+	, _fileIcon{ QFileIconProvider{}.icon(QFileIconProvider::File) }
+	, _folderIcon{ QFileIconProvider{}.icon(QFileIconProvider::Folder) }
+	, _unansweredIcon{ QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning) }
 {
 	_rows.reserve(plan.size());
 	for (PlannedConflict& conflict : plan)
@@ -59,8 +104,7 @@ CConflictListModel::CConflictListModel(ConflictPlan plan, const PromptOperation 
 		for (const size_t candidate : _topLevelRows)
 		{
 			const EntrySnapshot& candidateSource = _rows[candidate].conflict.issue.source;
-			const bool directoryLike = candidateSource.kind == OperationEntryKind::Directory || candidateSource.kind == OperationEntryKind::DirectoryLink;
-			if (directoryLike && row.conflict.issue.source.path.isStrictDescendantOf(candidateSource.path))
+			if (isDirectoryLike(candidateSource.kind) && row.conflict.issue.source.path.isStrictDescendantOf(candidateSource.path))
 			{
 				row.parentRow = candidate;
 				break;
@@ -159,8 +203,36 @@ QVariant CConflictListModel::data(const QModelIndex& index, const int role) cons
 	if (!index.isValid())
 		return {};
 
-	const Row& row = _rows[planRow(index)];
+	const size_t thisRow = planRow(index);
+	const Row& row = _rows[thisRow];
 	const OperationIssue& issue = row.conflict.issue;
+	if (role == Qt::DecorationRole)
+	{
+		if (index.column() == Name)
+			return isDirectoryLike(issue.source.kind) ? _folderIcon : _fileIcon;
+		if (index.column() == Action && !isAnswered(thisRow))
+			return _unansweredIcon;
+		return {};
+	}
+	if (role == Qt::FontRole)
+	{
+		// The newer of the two times is bold
+		if (issue.kind != IssueKind::FileReplacement)
+			return {};
+		const SideComparison comparison = compareSides(row.conflict);
+		const bool newer = (index.column() == SourceModified && comparison == SideComparison::DestinationOlder)
+			|| (index.column() == DestinationModified && comparison == SideComparison::DestinationNewer);
+		if (!newer)
+			return {};
+		QFont font;
+		font.setBold(true);
+		return font;
+	}
+	if (role == Qt::ForegroundRole)
+	{
+		const bool skipped = index.column() == Action && row.resolution && row.resolution->action == DecisionAction::Skip;
+		return skipped ? QVariant{ QApplication::palette().color(QPalette::PlaceholderText) } : QVariant{};
+	}
 	if (role == Qt::ToolTipRole)
 	{
 		QString tip = QDir::toNativeSeparators(issue.source.path.value());
@@ -179,12 +251,12 @@ QVariant CConflictListModel::data(const QModelIndex& index, const int role) cons
 	switch (index.column())
 	{
 	case Name: return nameText(row);
-	case Issue: return issueText(issue);
+	case Conflict: return conflictText(row.conflict);
 	case SourceSize: return sizeText(issue.source);
 	case SourceModified: return lastWriteText(row.conflict.sourceLastWrite);
 	case DestinationSize: return issue.destination ? sizeText(*issue.destination) : QString{};
 	case DestinationModified: return lastWriteText(row.conflict.destinationLastWrite);
-	case Action: return actionText(row);
+	case Action: return actionText(thisRow);
 	}
 	return {};
 }
@@ -197,7 +269,7 @@ QVariant CConflictListModel::headerData(const int section, const Qt::Orientation
 	switch (section)
 	{
 	case Name: return tr("Name");
-	case Issue: return tr("Issue");
+	case Conflict: return tr("Conflict");
 	case SourceSize: return tr("Source size");
 	case SourceModified: return tr("Source modified");
 	case DestinationSize: return tr("Destination size");
@@ -225,17 +297,20 @@ QString CConflictListModel::nameText(const Row& row) const
 	return QDir::toNativeSeparators(path.mid(parentPath.size() + 1));
 }
 
-QString CConflictListModel::actionText(const Row& row) const
+QString CConflictListModel::actionText(const size_t planRow) const
 {
+	const Row& row = _rows[planRow];
 	if (row.resolution)
 	{
 		if (row.resolution->action == DecisionAction::Rename)
 			return tr("Rename to \"%1\"").arg(row.resolution->newName.value_or(QString{}));
 		return fileOperationActionLabel(row.resolution->action, _operation);
 	}
+	if (!isApplicable(planRow))
+		return {};
 
 	const PlannedConflict& conflict = row.conflict;
 	if (conflict.renameTargetTakenByAnotherItem && conflict.resolution && conflict.resolution->newName)
 		return tr("\"%1\" is taken by another item of this operation, choose another name").arg(*conflict.resolution->newName);
-	return {};
+	return tr("Choose an action");
 }
