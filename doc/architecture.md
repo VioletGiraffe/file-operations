@@ -121,8 +121,8 @@ dialogs and hosts share, request validation errors included.
 containing folder's path plus thin_io's `directory_entry`. It can follow directory links and breaks cycles with resolved
 native identity, not path text. The engine builds its manifests with a traversal of its own.
 
-`thinioqstring` is the `QString`-path access to thin_io the scanner uses; hosts use it too. Its name decoding is lossy
-for POSIX names that are not valid in the locale's encoding.
+`thinioqstring` wraps the thin_io calls the scanner makes in `QString`-path form; hosts use it too. The path and name
+conversions themselves are thin_io's `qt_paths.hpp`.
 
 ## Folder comparison (`foldercomparison/`)
 

@@ -3,7 +3,7 @@
 #include "filecontentcomparison.h"
 
 #include "directoryscan/directoryscanner.h"
-#include "directoryscan/thinioqstring.h"
+#include "qt_paths.hpp" // thin_io
 
 #include "paths/pathsyntax.h"
 
@@ -48,7 +48,7 @@ SideMap enumerateSide(const QString& prefix, const std::atomic<bool>& abort)
 		const thin_io::entry_status& status = followedStatus(item);
 
 		SideEntry entry;
-		entry.relativePath = parentPath.mid(prefix.length()) % nativeNameToQString(item.name);
+		entry.relativePath = parentPath.mid(prefix.length()) % thin_io::to_qstring(item.name);
 		entry.isDirectory = status.attributes.kind == thin_io::entry_kind::directory;
 		if (status.attributes.kind == thin_io::entry_kind::regular_file)
 			entry.fileSize = status.logical_size.value_or(0);

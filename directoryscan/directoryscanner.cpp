@@ -1,6 +1,7 @@
 #include "directoryscanner.h"
 
 #include "thinioqstring.h"
+#include "qt_paths.hpp" // thin_io
 
 DISABLE_COMPILER_WARNINGS
 #include <QStringBuilder>
@@ -67,7 +68,7 @@ void scanContents(const QString& dirPath, const bool reachedThroughLink, Scan& s
 		if (followedStatus(entry).attributes.kind != thin_io::entry_kind::directory)
 			continue;
 
-		const QString childPath = dirPath % nativeNameToQString(entry.name) % '/';
+		const QString childPath = dirPath % thin_io::to_qstring(entry.name) % '/';
 		if (!entry.attributes.is_link)
 			scanContents(childPath, reachedThroughLink, scan);
 		else if (mayTraverseLink(childPath, scan))

@@ -23,8 +23,6 @@ RESTORE_COMPILER_WARNINGS
 // thin_io::list_directory() with listing_detail::full
 [[nodiscard]] thin_io::filesystem_result<std::vector<thin_io::directory_entry>> listDirectoryWithDetails(const QString& dirPath);
 [[nodiscard]] thin_io::filesystem_result<thin_io::directory_entry> getDirectoryEntry(const QString& path);
-// Lossy for a POSIX name that is not valid in the locale's encoding
-[[nodiscard]] QString nativeNameToQString(const thin_io::native_string& name);
 
 // Strips a directory path's trailing separator: native APIs reject it once the \\?\ prefix has turned path normalization off,
 // CreateFileW especially. A root keeps its separator: "C:" names the drive's current directory rather than its root.
