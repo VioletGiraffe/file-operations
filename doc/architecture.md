@@ -104,12 +104,13 @@ later display but does not weaken job/listener lifetime requirements.
 
 `CConflictListDialog` presents the conflict plan. A fresh plan with existing files or folders opens compact: counts by
 kind and comparison, and Replace all / Replace older / Skip all, which merge every folder, answer the file replacements,
-and start. Rows a button cannot answer (other kinds, and for Replace older, times that do not decide) open the list with
-those rows selected. The list: `CConflictListModel` shows the rows as a two-level tree (a row under an earlier directory
-row's source is its child), action buttons apply to the selected rows that allow the action, a Select menu picks rows by
-kind or comparison, and Start is enabled only once every applicable row is answered. A row under a root answered Skip
-or Rename is disabled and resolves to nullopt. A row's context menu reveals either side in the system file manager
-(qtutils' `revealInFileManager`, a link as itself) or copies its full path.
+and start; a plan with one top-level file or folder also offers Rename. Rows a button cannot answer (other kinds, and
+for Replace older, times that do not decide) open the list with those rows selected. The list: `CConflictListModel`
+shows the rows as a two-level tree (a row under an earlier directory row's source is its child), action buttons apply
+to the selected rows that allow the action, a Select menu picks rows by kind or comparison, and Start is enabled only
+once every applicable row is answered. A row under a root answered Skip or Rename is disabled and resolves to nullopt.
+A row's context menu reveals either side in the system file manager (qtutils' `revealInFileManager`, a link as itself)
+or copies its full path.
 
 `CFileOperationPrompt` renders one decision request: only the actions the engine allows, the "remaining matching
 issues" scope where permitted, and a rename row when renaming is offered. `fileoperationtexts` holds the wording the

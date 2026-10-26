@@ -29,7 +29,8 @@ class QPushButton;
 
 // The conflict plan: every row answered before the operation starts. It knows nothing of the job.
 // A fresh plan with existing files or folders opens compact: a breakdown by kind and comparison, and buttons that answer
-// the whole plan and start. Rows such a button cannot answer are left selected in the list.
+// the whole plan and start; a plan with one top-level entry can also rename it there. Rows such a button cannot answer are
+// left selected in the list.
 // In the list, action buttons apply to the selected rows that allow the action; the Select menu picks rows by kind or
 // by how the two sides compare. Start is enabled only once every applicable row has an answer.
 class CConflictListDialog : public QDialog
@@ -64,6 +65,8 @@ private:
 
 	void applyActionToSelection(DecisionAction action);
 	void renameSelectedRow();
+	// Answers the row Rename with a name the user enters; false when backed out or the name is refused.
+	[[nodiscard]] bool askRowRename(size_t planRow);
 	// Selects the applicable rows the predicate accepts, and nothing else, and scrolls to the first.
 	void selectRows(const std::function<bool(size_t planRow)>& predicate);
 

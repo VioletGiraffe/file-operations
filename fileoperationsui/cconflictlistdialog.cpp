@@ -132,6 +132,10 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 	connect(ui->btnSkipAll, &QPushButton::clicked, this, [this] {
 		answerAllAndStart([](const PlannedConflict&) { return DecisionAction::Skip; });
 	});
+	connect(ui->btnQuickRename, &QPushButton::clicked, this, [this] {
+		if (askRowRename(_model.planRow(_model.index(0, 0))))
+			accept();
+	});
 
 	updateSummaryAndButtons();
 
@@ -157,6 +161,14 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 		ui->btnReplaceOlder->hide();
 		ui->btnSkipAll->hide();
 	}
+	else if (_model.rowsTotal() == 1)
+	{
+		ui->btnReplaceAll->setText(tr("Replace"));
+		ui->btnSkipAll->setText(tr("Skip"));
+	}
+	// Renaming the one top-level entry answers every row under it too
+	if (_model.rowCount() != 1)
+		ui->btnQuickRename->hide();
 	ui->btnReplaceAll->setDefault(true);
 	ui->btnReplaceAll->setFocus(); // An autoDefault button with focus would take Enter instead
 	adjustSize();
@@ -339,6 +351,7 @@ void CConflictListDialog::showList()
 	ui->btnReplaceAll->hide();
 	ui->btnReplaceOlder->hide();
 	ui->btnSkipAll->hide();
+	ui->btnQuickRename->hide();
 	ui->btnReplaceAll->setDefault(false);
 	ui->listPanel->show();
 	ui->btnStart->show();
@@ -371,26 +384,31 @@ void CConflictListDialog::renameSelectedRow()
 	const std::vector<size_t> selected = selectedPlanRows();
 	assert_and_return_r(selected.size() == 1 && actionAllowed(_model.conflict(selected.front()).issue.kind, DecisionAction::Rename), );
 
-	const size_t planRow = selected.front();
+	if (askRowRename(selected.front()))
+		updateSummaryAndButtons();
+}
+
+bool CConflictListDialog::askRowRename(const size_t planRow)
+{
 	const QString currentName = _model.conflict(planRow).issue.source.path.name();
 	const auto newName = askNewName(currentName);
 	if (!newName)
-		return;
+		return false;
 
 	if (const NameRejection rejection = checkNewEntryName(*newName); rejection != NameRejection::None)
 	{
 		QMessageBox::warning(this, tr("Cannot use this name"), newNameRejectionText(rejection));
-		return;
+		return false;
 	}
 	// An unchanged name is not a rename; an exact-case respell of the same name is, hence the case-sensitive compare.
 	if (*newName == currentName)
 	{
 		QMessageBox::warning(this, tr("Nothing to rename"), tr("This is already the entry's name. Enter a different one to rename it."));
-		return;
+		return false;
 	}
 
 	_model.setResolution(planRow, Decision{ DecisionAction::Rename, DecisionScope::ThisItem, *newName });
-	updateSummaryAndButtons();
+	return true;
 }
 
 void CConflictListDialog::selectRows(const std::function<bool(size_t planRow)>& predicate)

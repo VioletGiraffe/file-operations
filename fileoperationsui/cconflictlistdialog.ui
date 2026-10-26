@@ -144,6 +144,13 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="btnQuickRename">
+       <property name="text">
+        <string>Rename...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="btnStart">
        <property name="text">
         <string>Start</string>
