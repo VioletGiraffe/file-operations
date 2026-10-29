@@ -366,6 +366,14 @@ std::expected<SameEntryVerdict, CFileSystemError> checkSameEntry(const CEntryPat
 	return **identityA == **identityB ? SameEntryVerdict::Same : SameEntryVerdict::Different;
 }
 
+bool crossDevicePredicted(const CEntryPath& source, const CEntryPath& destinationFolder)
+{
+	const auto sourceMetadata = readIdentityMetadata(source, thin_io::link_behavior::do_not_follow);
+	const auto destinationMetadata = readIdentityMetadata(destinationFolder, thin_io::link_behavior::follow);
+	const bool bothKnown = sourceMetadata && sourceMetadata->mount_id && destinationMetadata && destinationMetadata->mount_id;
+	return !bothKnown || *sourceMetadata->mount_id != *destinationMetadata->mount_id;
+}
+
 std::expected<std::optional<DirectoryTraversalIdentity>, CFileSystemError> readDirectoryTraversalIdentity(
 	const CEntryPath& path, const thin_io::link_behavior linkBehavior)
 {

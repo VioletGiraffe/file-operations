@@ -26,6 +26,10 @@
 // An entry absent on either side is Different.
 [[nodiscard]] std::expected<SameEntryVerdict, CFileSystemError> checkSameEntry(const CEntryPath& a, const CEntryPath& b, thin_io::link_behavior linkBehavior);
 
+// Whether moving source into destinationFolder crosses mounts, so a rename cannot do it. Follows destinationFolder, not source.
+// False only when both mount identities are known and equal: wrongly assuming a rename is the costlier mistake.
+[[nodiscard]] bool crossDevicePredicted(const CEntryPath& source, const CEntryPath& destinationFolder);
+
 // Key used only while detecting directory-link cycles in a materializing copy or copy-based-move manifest. Permanent
 // delete never follows links, and a successful wholesale rename never builds this traversal state. Object identity
 // alone is insufficient here: on Linux, two bind mounts can expose the same device/inode through different mounted

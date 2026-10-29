@@ -272,6 +272,23 @@ TEST_CASE("checkSameEntry: link behavior decides whether a symlink aliases its t
 }
 #endif
 
+TEST_CASE("crossDevicePredicted: one volume, and an absent side", "[mutator]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+
+	writeTestFile(base % "/file.bin", QByteArray(100, 'a'));
+	REQUIRE(QDir{}.mkpath(base % "/sub"));
+
+	CHECK_FALSE(crossDevicePredicted(ep(base % "/file.bin"), ep(base % "/sub")));
+	CHECK_FALSE(crossDevicePredicted(ep(base % "/sub"), ep(base)));
+
+	// No identity to compare
+	CHECK(crossDevicePredicted(ep(base % "/missing"), ep(base)));
+	CHECK(crossDevicePredicted(ep(base % "/file.bin"), ep(base % "/missing")));
+}
+
 //
 // renameEntry
 //

@@ -92,3 +92,34 @@ TEST_CASE("cross-volume transfer: copy then move against a real second volume", 
 		CHECK(stagingFileCount(destination % "/moved/tree/sub") == 0);
 	}
 }
+
+TEST_CASE("crossDevicePredicted: a real second volume, reached directly and through a directory link", "[crossvolume]")
+{
+	if (!qEnvironmentVariableIsSet(secondVolumeVariable))
+	{
+		WARN("FILE_OPERATIONS_TEST_SECOND_VOLUME is unset: real cross-volume coverage skipped");
+		return;
+	}
+
+	QTemporaryDir sourceDir; // Under TEMP - the first volume
+	REQUIRE(sourceDir.isValid());
+	QTemporaryDir destinationDir{ qEnvironmentVariable(secondVolumeVariable) % QStringLiteral("/fc-crossvolume-XXXXXX") };
+	REQUIRE(destinationDir.isValid());
+
+	const QString source = sourceDir.path();
+	const QString destination = destinationDir.path();
+	writeTestFile(source % "/file.bin", QByteArray(100, 'a'));
+	REQUIRE(QDir{}.mkpath(source % "/sub"));
+
+	CHECK(crossDevicePredicted(ep(source % "/file.bin"), ep(destination)));
+
+	if (linksUnsupportedByFilesystem(source))
+		return;
+
+	const QString linkToDestination = source % "/link";
+	REQUIRE(createDirectoryLink(destination, linkToDestination));
+	// The destination folder is followed onto the second volume
+	CHECK(crossDevicePredicted(ep(source % "/file.bin"), ep(linkToDestination)));
+	// A move takes the link itself, which stays on the first volume
+	CHECK_FALSE(crossDevicePredicted(ep(linkToDestination), ep(source % "/sub")));
+}

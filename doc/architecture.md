@@ -49,8 +49,8 @@ Important boundaries:
    - Two items planned onto one final name: a rename that causes it is refused in the plan; two unrenamed names that
      fold to one, and same-name roots from different folders, are left to execution's live prompt.
    - Whether a move crosses volumes is known only from a failed rename. Where the whole-root rename hit an existing
-     destination, planning predicts it from the volume identities; a wrong prediction costs unused plan rows or one
-     live prompt, never a wrong write.
+     destination, planning predicts it from the mount identities (`crossDevicePredicted()`); a wrong prediction costs
+     unused plan rows or one live prompt, never a wrong write.
 
 Exclusive publication degrades to a check followed by rename when the filesystem lacks an exclusive-rename
 primitive. This preserves compatibility but admits a narrow external race. Publication also relies on normal

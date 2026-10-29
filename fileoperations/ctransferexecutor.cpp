@@ -83,16 +83,6 @@ std::vector<thin_io::entry_identity> destinationAncestorIdentities(const Destina
 	}
 }
 
-// False only when both volumes are known and equal: an unknown is treated as cross-device, which costs unused
-// plan rows, where the opposite guess costs a live prompt.
-bool crossDevicePredicted(const CEntryPath& source, const CEntryPath& destinationParent)
-{
-	const auto sourceIdentity = readEntryIdentity(source, thin_io::link_behavior::do_not_follow);
-	const auto destinationIdentity = readEntryIdentity(destinationParent, thin_io::link_behavior::follow);
-	const bool bothKnown = sourceIdentity && *sourceIdentity && destinationIdentity && *destinationIdentity;
-	return !bothKnown || (**sourceIdentity).filesystem != (**destinationIdentity).filesystem;
-}
-
 bool isDirectoryLike(const OperationEntryKind kind) noexcept
 {
 	return kind == OperationEntryKind::Directory || kind == OperationEntryKind::DirectoryLink;
