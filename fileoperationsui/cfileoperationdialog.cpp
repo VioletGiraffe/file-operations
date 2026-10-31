@@ -79,7 +79,6 @@ QString nativePath(const CEntryPath& path)
 	return QDir::toNativeSeparators(path.value());
 }
 
-// Names folders only: an exact destination entry is shown as the folder that will hold it
 QString routeText(const FileOperationRequest& request)
 {
 	const auto* transfer = std::get_if<TransferRequest>(&request);
@@ -87,10 +86,9 @@ QString routeText(const FileOperationRequest& request)
 	if (!transfer)
 		return sourceFolder ? CFileOperationDialog::tr("from %1").arg(nativePath(*sourceFolder)) : QString{};
 
-	const CEntryPath& destination = transfer->destination.path;
-	const QString destinationFolder = nativePath(transfer->destination.intent == DestinationIntent::ExactEntry && !destination.isRoot() ? destination.parent() : destination);
-	return sourceFolder ? CFileOperationDialog::tr("from %1 to %2").arg(nativePath(*sourceFolder), destinationFolder)
-		: CFileOperationDialog::tr("to %1").arg(destinationFolder);
+	const QString destination = nativePath(transfer->destination.path);
+	return sourceFolder ? CFileOperationDialog::tr("from %1 to %2").arg(nativePath(*sourceFolder), destination)
+		: CFileOperationDialog::tr("to %1").arg(destination);
 }
 
 // The primary-unit rate, formatted for its unit: bytes per second, or whole items per second.
@@ -131,7 +129,7 @@ CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::fu
 	ui->_lblCurrentFile->clear();
 	ui->_lblStatus->clear();
 	ui->_lblSummary->hide();
-	updateWindowTitle(std::nullopt);
+	updateWindowTitle();
 	ui->_lblOperationName->setText(operationVerb(_operation) % QSL("..."));
 
 	// The per-file byte bar is meaningful only for byte-unit transfers; delete tracks whole items.
@@ -231,14 +229,15 @@ void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 		const int percent = Math::round<int>(static_cast<double>(processed) * 100.0 / static_cast<double>(*total));
 		ui->_overallProgress->setValue(percent);
 		ui->_overallProgressText->setText(QString::number(percent) % QLatin1Char('%'));
-		updateWindowTitle(percent);
+		_percentDone = percent;
 	}
 	else
 	{
 		ui->_overallProgress->setMaximum(0); // Totals not yet known (a manifest is still pending)
 		ui->_overallProgressText->clear();
-		updateWindowTitle(std::nullopt);
+		_percentDone.reset();
 	}
+	updateWindowTitle();
 
 	if (bytes && snapshot.currentEntryBytesTotal && *snapshot.currentEntryBytesTotal > 0)
 	{
@@ -292,7 +291,7 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_lblCurrentFile->clear();
 	ui->_lblStatus->clear();
 	ui->_lblOperationName->hide();
-	updateWindowTitle(std::nullopt);
+	updateWindowTitle();
 	ui->_btnPause->hide();
 	ui->_btnBackground->hide();
 	ui->_btnCancel->setText(tr("Close"));
@@ -397,6 +396,7 @@ void CFileOperationDialog::setPaused(const bool paused)
 	_job.setPaused(paused);
 	ui->_btnPause->setText(_paused ? tr("Resume") : tr("Pause"));
 	ui->_overallProgress->setState(_paused ? psPaused : psNormal);
+	updateWindowTitle();
 }
 
 void CFileOperationDialog::togglePause()
@@ -461,13 +461,20 @@ bool CFileOperationDialog::confirmCancellation()
 	return false;
 }
 
-void CFileOperationDialog::updateWindowTitle(const std::optional<int> percentDone)
+void CFileOperationDialog::updateWindowTitle()
 {
 	QString title = operationVerb(_operation);
 	if (!_routeText.isEmpty())
 		title += QLatin1Char(' ') % _routeText;
-	if (percentDone)
-		title.prepend(QString::number(*percentDone) % QSL("% "));
+
+	// A finished job is neither in progress nor paused: cancelling while paused leaves _paused set
+	if (!_result)
+	{
+		if (_paused)
+			title.prepend(tr("(paused)") % QLatin1Char(' '));
+		if (_percentDone)
+			title.prepend(QString::number(*_percentDone) % QSL("% "));
+	}
 	setWindowTitle(title);
 }
 

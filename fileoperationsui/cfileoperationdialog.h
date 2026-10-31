@@ -103,7 +103,7 @@ private:
 	void switchToBackground();
 	[[nodiscard]] bool confirmCancellation();
 
-	void updateWindowTitle(std::optional<int> percentDone);
+	void updateWindowTitle();
 
 	Ui::CFileOperationDialog* ui;
 
@@ -118,6 +118,7 @@ private:
 	QTimer* _eventTimer = nullptr;
 	bool _draining = false; // A modal prompt spins a nested loop; the timer must not re-enter the drain
 	bool _paused = false;
+	std::optional<int> _percentDone; // Of the whole job; empty while the totals are unknown
 	bool _isInBackgroundMode = false;
 	bool _dismissedWhileRunning = false; // Closed by the user mid-operation; completion must not bring it back
 	bool _selfDisposes = true; // On by default (production); a caller that owns the instance disables it
