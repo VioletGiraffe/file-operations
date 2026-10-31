@@ -12,6 +12,7 @@
 DISABLE_COMPILER_WARNINGS
 #include <QPoint>
 #include <QSize>
+#include <QString>
 #include <QWidget>
 RESTORE_COMPILER_WARNINGS
 
@@ -102,11 +103,14 @@ private:
 	void switchToBackground();
 	[[nodiscard]] bool confirmCancellation();
 
+	void updateWindowTitle(std::optional<int> percentDone);
+
 	Ui::CFileOperationDialog* ui;
 
 	// Declared before _job: their initializers read the request that _job's initializer then moves from.
 	const PromptOperation _operation;
 	const PrimaryProgressUnit _primaryUnit;
+	const QString _routeText; // "from X to Y", for the window title
 	const std::function<QPoint(QSize)> _backgroundAnchorProvider;
 
 	CFileOperationJob _job;

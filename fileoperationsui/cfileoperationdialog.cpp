@@ -56,6 +56,43 @@ QString operationVerb(const PromptOperation operation)
 	return {};
 }
 
+// The deepest folder holding every source; nullopt when the sources share no root
+std::optional<CEntryPath> commonSourceFolder(const std::vector<CEntryPath>& sources)
+{
+	assert_and_return_r(!sources.empty(), std::nullopt);
+
+	CEntryPath folder = sources.front().parent();
+	for (const CEntryPath& source : sources)
+	{
+		while (!source.isStrictDescendantOf(folder))
+		{
+			if (folder.isRoot())
+				return std::nullopt;
+			folder = folder.parent();
+		}
+	}
+	return folder;
+}
+
+QString nativePath(const CEntryPath& path)
+{
+	return QDir::toNativeSeparators(path.value());
+}
+
+// Names folders only: an exact destination entry is shown as the folder that will hold it
+QString routeText(const FileOperationRequest& request)
+{
+	const auto* transfer = std::get_if<TransferRequest>(&request);
+	const std::optional<CEntryPath> sourceFolder = commonSourceFolder(transfer ? transfer->sources : std::get<PermanentDeleteRequest>(request).sources);
+	if (!transfer)
+		return sourceFolder ? CFileOperationDialog::tr("from %1").arg(nativePath(*sourceFolder)) : QString{};
+
+	const CEntryPath& destination = transfer->destination.path;
+	const QString destinationFolder = nativePath(transfer->destination.intent == DestinationIntent::ExactEntry && !destination.isRoot() ? destination.parent() : destination);
+	return sourceFolder ? CFileOperationDialog::tr("from %1 to %2").arg(nativePath(*sourceFolder), destinationFolder)
+		: CFileOperationDialog::tr("to %1").arg(destinationFolder);
+}
+
 // The primary-unit rate, formatted for its unit: bytes per second, or whole items per second.
 QString speedText(const uint64_t primaryUnitsPerSecond, const PrimaryProgressUnit unit)
 {
@@ -72,6 +109,7 @@ CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::fu
 	ui(new Ui::CFileOperationDialog),
 	_operation(operationFromRequest(request)),
 	_primaryUnit(unitFromRequest(request)),
+	_routeText(routeText(request)),
 	_backgroundAnchorProvider(mv(backgroundAnchorProvider)),
 	_job(mv(request), transferChunkSize)
 {
@@ -93,8 +131,8 @@ CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::fu
 	ui->_lblCurrentFile->clear();
 	ui->_lblStatus->clear();
 	ui->_lblSummary->hide();
-	setWindowTitle(operationVerb(_operation) % QSL("..."));
-	ui->_lblOperationName->setText(windowTitle());
+	updateWindowTitle(std::nullopt);
+	ui->_lblOperationName->setText(operationVerb(_operation) % QSL("..."));
 
 	// The per-file byte bar is meaningful only for byte-unit transfers; delete tracks whole items.
 	if (_primaryUnit != PrimaryProgressUnit::Bytes)
@@ -193,11 +231,13 @@ void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 		const int percent = Math::round<int>(static_cast<double>(processed) * 100.0 / static_cast<double>(*total));
 		ui->_overallProgress->setValue(percent);
 		ui->_overallProgressText->setText(QString::number(percent) % QLatin1Char('%'));
+		updateWindowTitle(percent);
 	}
 	else
 	{
 		ui->_overallProgress->setMaximum(0); // Totals not yet known (a manifest is still pending)
 		ui->_overallProgressText->clear();
+		updateWindowTitle(std::nullopt);
 	}
 
 	if (bytes && snapshot.currentEntryBytesTotal && *snapshot.currentEntryBytesTotal > 0)
@@ -252,6 +292,7 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_lblCurrentFile->clear();
 	ui->_lblStatus->clear();
 	ui->_lblOperationName->hide();
+	updateWindowTitle(std::nullopt);
 	ui->_btnPause->hide();
 	ui->_btnBackground->hide();
 	ui->_btnCancel->setText(tr("Close"));
@@ -418,6 +459,16 @@ bool CFileOperationDialog::confirmCancellation()
 	if (!wasPaused && !_result)
 		setPaused(false);
 	return false;
+}
+
+void CFileOperationDialog::updateWindowTitle(const std::optional<int> percentDone)
+{
+	QString title = operationVerb(_operation);
+	if (!_routeText.isEmpty())
+		title += QLatin1Char(' ') % _routeText;
+	if (percentDone)
+		title.prepend(QString::number(*percentDone) % QSL("% "));
+	setWindowTitle(title);
 }
 
 void CFileOperationDialog::closeEvent(QCloseEvent* e)
