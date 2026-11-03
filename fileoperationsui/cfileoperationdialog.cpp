@@ -130,7 +130,6 @@ CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::fu
 	ui->_lblStatus->clear();
 	ui->_lblSummary->hide();
 	updateWindowTitle();
-	ui->_lblOperationName->setText(operationVerb(_operation) % QSL("..."));
 
 	// The per-file byte bar is meaningful only for byte-unit transfers; delete tracks whole items.
 	if (_primaryUnit != PrimaryProgressUnit::Bytes)
@@ -214,7 +213,6 @@ void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 		ui->_overallProgress->setMaximum(0);
 		ui->_overallProgressText->clear();
 		ui->_lblStatus->setText(tr("Scanning... %1 items found").arg(snapshot.itemsProcessed));
-		ui->_lblOperationName->setText(tr("Scanning..."));
 		return;
 	}
 
@@ -250,7 +248,6 @@ void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 	if (snapshot.secondsRemaining)
 		status += QSL(", ") % secondsToTimeIntervalString(*snapshot.secondsRemaining) % QSL(" remaining");
 	ui->_lblStatus->setText(status);
-	ui->_lblOperationName->setText(operationVerb(_operation) % QSL("..."));
 }
 
 void CFileOperationDialog::handleDecisionRequest(const DecisionRequest& request)
@@ -290,7 +287,6 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_fileProgressText->hide();
 	ui->_lblCurrentFile->clear();
 	ui->_lblStatus->clear();
-	ui->_lblOperationName->hide();
 	updateWindowTitle();
 	ui->_btnPause->hide();
 	ui->_btnBackground->hide();
