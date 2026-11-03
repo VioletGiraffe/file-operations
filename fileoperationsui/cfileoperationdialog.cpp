@@ -136,6 +136,12 @@ CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::fu
 	{
 		ui->_fileProgress->hide();
 		ui->_fileProgressText->hide();
+
+		// The item name takes over the hidden bar's columns
+		int row = 0, column = 0, rowSpan = 0, columnSpan = 0;
+		ui->progressGrid->getItemPosition(ui->progressGrid->indexOf(ui->_lblCurrentFile), &row, &column, &rowSpan, &columnSpan);
+		ui->progressGrid->removeWidget(ui->_lblCurrentFile);
+		ui->progressGrid->addWidget(ui->_lblCurrentFile, row, column, rowSpan, -1);
 	}
 
 	// While running this button cancels (and the dialog lives on until the job reports); once finished it
@@ -285,8 +291,8 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_overallProgress->setState(summary.status == CompletionStatus::Failed ? psStopped : psNormal);
 	ui->_fileProgress->hide();
 	ui->_fileProgressText->hide();
-	ui->_lblCurrentFile->clear();
-	ui->_lblStatus->clear();
+	ui->_lblCurrentFile->hide();
+	ui->_lblStatus->hide();
 	updateWindowTitle();
 	ui->_btnPause->hide();
 	ui->_btnBackground->hide();
