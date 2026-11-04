@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fileoperations/fileoperationtypes.h"
+#include "fileoperations/inlinerename.h"
 #include "fileoperations/newnamecheck.h"
 
 
@@ -28,5 +29,7 @@ enum class PromptOperation
 [[nodiscard]] QString fileOperationDiagnosticText(const OperationDiagnostic& diagnostic);
 // Why a proposed name was refused, phrased for the user. Empty for NameRejection::None.
 [[nodiscard]] QString newNameRejectionText(NameRejection rejection);
+// Why inlineRename did not rename, for a caller that never replaces: an occupied name is the reason. Empty for Renamed and NothingToDo.
+[[nodiscard]] QString inlineRenameFailureText(const InlineRenameResult& result);
 // Why makeTransferRequest() or makePermanentDeleteRequest() refused a request, phrased for the user.
 [[nodiscard]] QString requestValidationErrorText(RequestValidationError error);

@@ -158,6 +158,25 @@ QString newNameRejectionText(const NameRejection rejection)
 	return {};
 }
 
+QString inlineRenameFailureText(const InlineRenameResult& result)
+{
+	using enum InlineRenameStatus;
+	switch (result.status)
+	{
+	case Renamed:
+	case NothingToDo:
+		return {};
+	case ReplacementRequired:
+	case Rejected:
+		return fileSystemErrorText(CFileSystemError{ FileErrorCategory::AlreadyExists, 0, {} });
+	case RejectedInvalidName:
+		return newNameRejectionText(result.nameRejection);
+	case Failed:
+		return fileSystemErrorText(result.failure->filesystemError);
+	}
+	return {};
+}
+
 QString requestValidationErrorText(const RequestValidationError error)
 {
 	using enum RequestValidationError;

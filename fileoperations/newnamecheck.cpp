@@ -12,17 +12,18 @@ RESTORE_COMPILER_WARNINGS
 namespace
 {
 
-bool isRejectedWhitespaceCharacter(const QChar c)
-{
 #ifdef _WIN32
-	return c.isSpace();
+constexpr bool NATIVE_RULES_ARE_WINDOWS_RULES = true;
 #else
-	// Non-ASCII characters that Qt classifies as whitespace are ordinary filename text on POSIX.
-	return c.unicode() < 0x80 && c.isSpace();
+constexpr bool NATIVE_RULES_ARE_WINDOWS_RULES = false;
 #endif
+
+bool isRejectedWhitespaceCharacter(const QChar c, const bool windowsRules)
+{
+	// Non-ASCII characters that Qt classifies as whitespace are ordinary filename text on POSIX.
+	return c.isSpace() && (windowsRules || c.unicode() < 0x80);
 }
 
-#ifdef _WIN32
 bool isWindowsInvalidNameCharacter(const QChar c)
 {
 	if (c.unicode() < 0x20)
@@ -43,8 +44,11 @@ bool isWindowsInvalidNameCharacter(const QChar c)
 
 bool isWindowsReservedDeviceName(const QString& name)
 {
+	// Windows ignores the extension and the spaces ending the stem: "NUL.txt" and "CON .log" are devices too.
 	const qsizetype dotPosition = name.indexOf(QLatin1Char('.'));
-	const QString stem = dotPosition == -1 ? name : name.left(dotPosition);
+	QStringView stem = QStringView{ name }.left(dotPosition == -1 ? name.size() : dotPosition);
+	while (stem.endsWith(QLatin1Char(' ')))
+		stem.chop(1);
 
 	if (stem.compare(QLatin1String("CON"), Qt::CaseInsensitive) == 0
 		|| stem.compare(QLatin1String("PRN"), Qt::CaseInsensitive) == 0
@@ -52,31 +56,35 @@ bool isWindowsReservedDeviceName(const QString& name)
 		|| stem.compare(QLatin1String("NUL"), Qt::CaseInsensitive) == 0)
 		return true;
 
-	if (stem.length() != 4 || stem[3] < QLatin1Char('1') || stem[3] > QLatin1Char('9'))
+	if (stem.length() != 4)
 		return false;
 
-	const QString prefix = stem.left(3);
+	// The superscript digits are reserved as well.
+	const char16_t digit = stem[3].unicode();
+	if ((digit < u'1' || digit > u'9') && digit != u'¹' && digit != u'²' && digit != u'³')
+		return false;
+
+	const QStringView prefix = stem.left(3);
 	return prefix.compare(QLatin1String("COM"), Qt::CaseInsensitive) == 0
 		|| prefix.compare(QLatin1String("LPT"), Qt::CaseInsensitive) == 0;
 }
-#endif
 
 } // namespace
 
-NameRejection checkNewEntryName(const QString& name)
+NameRejection checkNewEntryName(const QString& name, const NameRules rules)
 {
+	const bool windowsRules = NATIVE_RULES_ARE_WINDOWS_RULES || rules == NameRules::Portable;
+
 	if (name.isEmpty())
 		return NameRejection::Empty;
 
 	if (name.contains(QChar{ 0 }))
 		return NameRejection::InvalidCharacter;
 
-#ifdef _WIN32
-	if (std::any_of(name.cbegin(), name.cend(), isWindowsInvalidNameCharacter))
+	if (windowsRules && std::any_of(name.cbegin(), name.cend(), isWindowsInvalidNameCharacter))
 		return NameRejection::InvalidCharacter;
-#endif
 
-	if (std::all_of(name.cbegin(), name.cend(), isRejectedWhitespaceCharacter))
+	if (std::all_of(name.cbegin(), name.cend(), [windowsRules](const QChar c) { return isRejectedWhitespaceCharacter(c, windowsRules); }))
 		return NameRejection::WhitespaceOnly;
 
 	// isSingleComponentName owns the structural rules; which of them failed matters only for the wording.
@@ -87,7 +95,13 @@ NameRejection checkNewEntryName(const QString& name)
 			: NameRejection::Separator;
 	}
 
-#ifdef _WIN32
+	if (!windowsRules)
+		return NameRejection::None;
+
+	// A Windows separator that isSingleComponentName accepts as name text on POSIX.
+	if (name.contains(QLatin1Char('\\')))
+		return NameRejection::Separator;
+
 	// Legal on NTFS and reachable through the extended-length prefix this app uses, but every tool that goes through
 	// Win32 normalization - Explorer, cmd, most applications - would resolve the name without them and miss the entry.
 	if (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' ')))
@@ -95,7 +109,6 @@ NameRejection checkNewEntryName(const QString& name)
 
 	if (isWindowsReservedDeviceName(name))
 		return NameRejection::ReservedDeviceName;
-#endif
 
 	return NameRejection::None;
 }

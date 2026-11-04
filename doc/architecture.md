@@ -18,7 +18,8 @@ CFileOperationJob
 ```
 
 `fileoperationtypes.h` defines requests, issues, decisions, progress, and summaries. `centrypath.h` owns operation
-paths; `newnamecheck.h` validates user-proposed names. The UI chooses `DestinationIntent` once when building a
+paths; `newnamecheck.h` validates user-proposed names, by the platform's own rules or by Windows rules on every
+platform for names that must stay portable. The UI chooses `DestinationIntent` once when building a
 request; lower layers do not reinterpret it.
 
 Important boundaries:

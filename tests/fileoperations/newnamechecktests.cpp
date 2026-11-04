@@ -88,14 +88,15 @@ TEST_CASE("checkNewEntryName: Windows refuses native-forbidden characters", "[ne
 TEST_CASE("checkNewEntryName: Windows refuses reserved device names with any extension", "[newnamecheck]")
 {
 	for (const QString& name : { QStringLiteral("CON"), QStringLiteral("prn"), QStringLiteral("Aux"), QStringLiteral("NUL"),
-		QStringLiteral("COM1"), QStringLiteral("com9.log"), QStringLiteral("LPT1"), QStringLiteral("lpt9.txt"), QStringLiteral("NUL.txt") })
+		QStringLiteral("COM1"), QStringLiteral("com9.log"), QStringLiteral("LPT1"), QStringLiteral("lpt9.txt"), QStringLiteral("NUL.txt"),
+		QStringLiteral("COM¹"), QStringLiteral("com².txt"), QStringLiteral("LPT³"), QStringLiteral("CON .log"), QStringLiteral("nul  .txt") })
 	{
 		INFO("name: " << name.toStdString());
 		CHECK(checkNewEntryName(name) == NameRejection::ReservedDeviceName);
 	}
 
 	for (const QString& name : { QStringLiteral("CONSOLE"), QStringLiteral("NUL_name"), QStringLiteral("COM0"),
-		QStringLiteral("COM10"), QStringLiteral("LPT0"), QStringLiteral("LPT10") })
+		QStringLiteral("COM10"), QStringLiteral("LPT0"), QStringLiteral("LPT10"), QStringLiteral("COM⁴"), QStringLiteral(" CON.txt") })
 	{
 		INFO("name: " << name.toStdString());
 		CHECK(checkNewEntryName(name) == NameRejection::None);
@@ -114,6 +115,25 @@ TEST_CASE("checkNewEntryName: a trailing dot or space is an ordinary POSIX name"
 }
 
 #endif
+
+TEST_CASE("checkNewEntryName: portable rules are the Windows rules on every platform", "[newnamecheck]")
+{
+	const auto checkPortable = [](const QString& name) { return checkNewEntryName(name, NameRules::Portable); };
+
+	for (const QString& name : { QStringLiteral("a:b"), QStringLiteral("a?b"), QStringLiteral("a*b"), QStringLiteral("a|b") })
+	{
+		INFO("name: " << name.toStdString());
+		CHECK(checkPortable(name) == NameRejection::InvalidCharacter);
+	}
+	CHECK(checkPortable(QStringLiteral("a\\b")) == NameRejection::Separator);
+	CHECK(checkPortable(QStringLiteral("name.")) == NameRejection::TrailingDotOrSpace);
+	CHECK(checkPortable(QStringLiteral("name ")) == NameRejection::TrailingDotOrSpace);
+	CHECK(checkPortable(QStringLiteral("NUL.txt")) == NameRejection::ReservedDeviceName);
+	CHECK(checkPortable(QStringLiteral("COM¹")) == NameRejection::ReservedDeviceName);
+	CHECK(checkPortable(QString(1, QChar{ 0x3000 })) == NameRejection::WhitespaceOnly);
+
+	CHECK(checkPortable(QStringLiteral("Summer trip (1).jpg")) == NameRejection::None);
+}
 
 TEST_CASE("checkNewEntryPath: every component is judged", "[newnamecheck]")
 {
