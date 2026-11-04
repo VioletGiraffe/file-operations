@@ -59,9 +59,9 @@ bool isWindowsReservedDeviceName(const QString& name)
 	if (stem.length() != 4)
 		return false;
 
-	// The superscript digits are reserved as well.
+	// Microsoft's naming rules reserve 0 to 9 and the superscript digits.
 	const char16_t digit = stem[3].unicode();
-	if ((digit < u'1' || digit > u'9') && digit != u'¹' && digit != u'²' && digit != u'³')
+	if ((digit < u'0' || digit > u'9') && digit != u'¹' && digit != u'²' && digit != u'³')
 		return false;
 
 	const QStringView prefix = stem.left(3);

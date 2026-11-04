@@ -89,14 +89,15 @@ TEST_CASE("checkNewEntryName: Windows refuses reserved device names with any ext
 {
 	for (const QString& name : { QStringLiteral("CON"), QStringLiteral("prn"), QStringLiteral("Aux"), QStringLiteral("NUL"),
 		QStringLiteral("COM1"), QStringLiteral("com9.log"), QStringLiteral("LPT1"), QStringLiteral("lpt9.txt"), QStringLiteral("NUL.txt"),
-		QStringLiteral("COM¹"), QStringLiteral("com².txt"), QStringLiteral("LPT³"), QStringLiteral("CON .log"), QStringLiteral("nul  .txt") })
+		QStringLiteral("COM¹"), QStringLiteral("com².txt"), QStringLiteral("LPT³"), QStringLiteral("CON .log"), QStringLiteral("nul  .txt"),
+		QStringLiteral("COM0"), QStringLiteral("lpt0.txt") })
 	{
 		INFO("name: " << name.toStdString());
 		CHECK(checkNewEntryName(name) == NameRejection::ReservedDeviceName);
 	}
 
-	for (const QString& name : { QStringLiteral("CONSOLE"), QStringLiteral("NUL_name"), QStringLiteral("COM0"),
-		QStringLiteral("COM10"), QStringLiteral("LPT0"), QStringLiteral("LPT10"), QStringLiteral("COM⁴"), QStringLiteral(" CON.txt") })
+	for (const QString& name : { QStringLiteral("CONSOLE"), QStringLiteral("NUL_name"), QStringLiteral("COM10"), QStringLiteral("LPT10"),
+		QStringLiteral("COM⁴"), QStringLiteral(" CON.txt") })
 	{
 		INFO("name: " << name.toStdString());
 		CHECK(checkNewEntryName(name) == NameRejection::None);
