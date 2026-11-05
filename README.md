@@ -23,7 +23,8 @@ directory scanning and folder comparison.
 - Handles awkward input: unusual names, paths beyond Windows' `MAX_PATH`, FAT32 and exFAT volumes, case-only
   renames. A destination inside its own source is refused, judged by filesystem identity, not spelling.
 - Requests are built from raw path text (`makeTransferRequest`, `makePermanentDeleteRequest`), validated once.
-- Inline rename of a single entry, and validation of a name a user proposes for a new or renamed entry.
+- Inline rename of a single entry; batch rename by name rules (masks, counter, find and replace) that never replaces an
+  existing entry; validation of a name a user proposes for a new or renamed entry.
 - Not included: moving to the Trash / Recycle Bin (delete is permanent), and clipboard integration.
 
 **Dialogs** (`fileoperationsui/`)

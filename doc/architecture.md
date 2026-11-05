@@ -73,7 +73,8 @@ Known defects:
   source's time was applied. Only flushing every file before applying it would prevent that.
 
 Inline rename is a separate synchronous command that reuses name, inspection, identity, and native rename
-primitives. Test-only fault injection lives in `operationtesthooks` and compiles out of production builds.
+primitives. Batch rename (`batchrename`) applies inline rename per item and never replaces an existing entry.
+Test-only fault injection lives in `operationtesthooks` and compiles out of production builds.
 
 ## Paths
 

@@ -31,7 +31,8 @@ SOURCES += \
 	crossvolumetests.cpp \
 	hostilenametests.cpp \
 	fileoperationjobtests.cpp \
-	inlinerenametests.cpp
+	inlinerenametests.cpp \
+	batchrenametests.cpp
 
 HEADERS += \
 	fileoperationtesthelpers.h \
