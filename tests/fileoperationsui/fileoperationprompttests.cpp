@@ -279,7 +279,7 @@ TEST_CASE("prompt: what Enter does", "[fileoperationprompt]")
 		}
 	}
 
-	SECTION("a usable new name makes Enter rename, and giving it up restores the kind's default")
+	SECTION("a new name makes Enter rename, and giving it up restores the kind's default")
 	{
 		CFileOperationPrompt prompt{ requestForKind(FileReplacement), PromptOperation::Copy };
 		auto* edit = prompt.findChild<QLineEdit*>(QStringLiteral("renameEdit"));
@@ -292,7 +292,7 @@ TEST_CASE("prompt: what Enter does", "[fileoperationprompt]")
 		CHECK(defaultButtonName(prompt) == QStringLiteral("btnReplace"));
 	}
 
-	SECTION("a kind with no default gains one only while a usable new name is entered")
+	SECTION("a kind with no default gains one only while a new name is entered")
 	{
 		CFileOperationPrompt prompt{ requestForKind(TypeMismatch), PromptOperation::Copy };
 		auto* edit = prompt.findChild<QLineEdit*>(QStringLiteral("renameEdit"));
@@ -356,8 +356,8 @@ TEST_CASE("prompt: rename controls and validation", "[fileoperationprompt]")
 	REQUIRE(edit != nullptr);
 	REQUIRE(renameButton != nullptr);
 
-	// Rename is never disabled - an unusable name is explained when it is clicked. Only its default-button status
-	// tracks usability, so Enter does not run a rename that cannot happen.
+	// Rename is never disabled - an unusable name is explained when it is clicked. Its default-button status tracks
+	// whether the name changed.
 	SECTION("prefilled with the current name, which is not a rename")
 	{
 		CHECK(edit->text() == QStringLiteral("src.bin"));
@@ -365,25 +365,15 @@ TEST_CASE("prompt: rename controls and validation", "[fileoperationprompt]")
 		CHECK(!renameButton->isDefault());
 	}
 
-	SECTION("an unusable name leaves the button enabled but not the default")
+	SECTION("an unusable new name keeps Rename the default: Enter explains it and never replaces")
 	{
 		for (const char* unusable : { "", "   ", "a/b.bin", ".", ".." })
 		{
 			edit->setText(QLatin1String(unusable));
 			INFO("name: '" << unusable << "'");
 			CHECK(renameButton->isEnabled());
-			CHECK(!renameButton->isDefault());
+			CHECK(defaultButtonName(prompt) == QStringLiteral("btnRename"));
 		}
-	}
-
-	SECTION("a backslash separates components only on Windows")
-	{
-		edit->setText(QStringLiteral("a\\b.bin"));
-#ifdef _WIN32
-		CHECK(!renameButton->isDefault());
-#else
-		CHECK(renameButton->isDefault()); // An ordinary character in a POSIX name
-#endif
 	}
 
 	SECTION("a case-only respell is a real rename")

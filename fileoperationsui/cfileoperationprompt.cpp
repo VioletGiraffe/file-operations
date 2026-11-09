@@ -94,13 +94,13 @@ bool CFileOperationPrompt::renameNameAccepted()
 
 void CFileOperationPrompt::updateRenameControls()
 {
-	// Enter follows the intent expressed in the edit: a name that would rename makes Rename the default, and without
-	// one Enter falls back to the kind's own default - which may be none. Otherwise typing a name and pressing Enter
-	// from the edit would run the kind's default action on the original name.
+	// Enter follows the intent expressed in the edit: a changed name makes Rename the default, even one it cannot use, so that
+	// Enter explains the refusal and never runs the kind's own default instead. The unchanged name restores the kind's default,
+	// which may be none.
 	// The button stays enabled either way: a refusal the user can read beats a dead control they cannot explain.
-	const bool renameUsable = !renameRefusal(ui->renameEdit->text(), _request.issue.source.path.name());
-	_renameButton->setDefault(renameUsable);
-	if (!renameUsable && _defaultButton)
+	const bool nameChanged = ui->renameEdit->text() != _request.issue.source.path.name();
+	_renameButton->setDefault(nameChanged);
+	if (!nameChanged && _defaultButton)
 		_defaultButton->setDefault(true);
 }
 
