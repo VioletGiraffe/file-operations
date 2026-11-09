@@ -18,6 +18,7 @@ RESTORE_COMPILER_WARNINGS
 
 #include <functional>
 #include <optional>
+#include <utility>
 
 namespace Ui {
 class CFileOperationDialog;
@@ -75,6 +76,9 @@ public:
 	// the dialog lives until its owner destroys it.
 	void disableSelfDisposal() noexcept { _selfDisposes = false; }
 
+	// Called once the operation ends, before the dialog disposes of itself
+	void setCompletionHandler(std::function<void(const OperationSummary&)> handler) { _completionHandler = std::move(handler); }
+
 protected:
 	// Presents one decision request and returns the user's choice. The production path shows a modal
 	// CFileOperationPrompt; a test overrides this to answer synchronously.
@@ -123,4 +127,5 @@ private:
 	bool _dismissedWhileRunning = false; // Closed by the user mid-operation; completion must not bring it back
 	bool _selfDisposes = true; // On by default (production); a caller that owns the instance disables it
 	std::optional<OperationSummary> _result;
+	std::function<void(const OperationSummary&)> _completionHandler;
 };

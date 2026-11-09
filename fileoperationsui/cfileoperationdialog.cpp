@@ -302,6 +302,9 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_lblSummary->setText(composeSummaryText(summary, _operation));
 	ui->_lblSummary->show();
 
+	if (_completionHandler)
+		_completionHandler(summary);
+
 	// An embedded or component-test dialog is owned and inspected by its caller; only a self-disposing
 	// production dialog manages its own lifetime past completion.
 	if (!_selfDisposes)
