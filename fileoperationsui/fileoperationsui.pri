@@ -4,15 +4,13 @@ HEADERS += \
 	$$PWD/cconflictlistdialog.h \
 	$$PWD/cconflictlistmodel.h \
 	$$PWD/cfileoperationdialog.h \
-	$$PWD/cfileoperationprompt.h \
-	$$PWD/fileoperationtexts.h
+	$$PWD/cfileoperationprompt.h
 
 SOURCES += \
 	$$PWD/cconflictlistdialog.cpp \
 	$$PWD/cconflictlistmodel.cpp \
 	$$PWD/cfileoperationdialog.cpp \
-	$$PWD/cfileoperationprompt.cpp \
-	$$PWD/fileoperationtexts.cpp
+	$$PWD/cfileoperationprompt.cpp
 
 FORMS += \
 	$$PWD/cconflictlistdialog.ui \

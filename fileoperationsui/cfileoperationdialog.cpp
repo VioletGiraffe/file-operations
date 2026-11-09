@@ -2,7 +2,6 @@
 
 #include "cconflictlistdialog.h"
 #include "cfileoperationprompt.h"
-#include "fileoperationtexts.h"
 
 
 // Submodule includes
@@ -299,7 +298,7 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	ui->_btnCancel->setText(tr("Close"));
 	ui->_btnCancel->setEnabled(true);
 
-	ui->_lblSummary->setText(composeSummaryText(summary, _operation));
+	ui->_lblSummary->setText(fileOperationSummaryText(summary, _operation));
 	ui->_lblSummary->show();
 
 	if (_completionHandler)
@@ -311,7 +310,7 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 		return;
 
 	// Nothing left for the user to act on, or a dialog they already dismissed: leave no window behind.
-	if (_dismissedWhileRunning || !outcomeNeedsAttention(summary))
+	if (_dismissedWhileRunning || !fileOperationNeedsAttention(summary))
 	{
 		deleteLater();
 		return;
@@ -326,51 +325,6 @@ void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
 	}
 	else if (!isVisible())
 		show(); // Finished before the delayed first show, with an outcome worth showing
-}
-
-bool CFileOperationDialog::outcomeNeedsAttention(const OperationSummary& summary) noexcept
-{
-	// Only diagnostics are worth a window the user has to dismiss. A clean run needs no acknowledgement,
-	// and a cancelled one was their own doing. Failed without a failed item is a job that never got that
-	// far - a scan failure - and must not vanish silently.
-	return summary.status == CompletionStatus::Failed || summary.failedItems > 0 || summary.warningCount > 0;
-}
-
-QString CFileOperationDialog::composeSummaryText(const OperationSummary& summary, const PromptOperation operation)
-{
-	const QString verb = operation == PromptOperation::Delete ? tr("deleted")
-		: operation == PromptOperation::Move ? tr("moved") : tr("copied");
-
-	QString headline;
-	switch (summary.status)
-	{
-	case CompletionStatus::Completed: headline = tr("Operation finished."); break;
-	case CompletionStatus::Cancelled: headline = tr("Operation cancelled."); break;
-	case CompletionStatus::Failed: headline = tr("Operation failed."); break;
-	}
-
-	QStringList facts;
-	if (summary.completedItems > 0)
-		facts += tr("%1 items %2").arg(summary.completedItems).arg(verb);
-	if (summary.skippedItems > 0)
-		facts += tr("%1 skipped").arg(summary.skippedItems);
-	if (summary.failedItems > 0)
-		facts += tr("%1 failed").arg(summary.failedItems);
-	if (summary.alreadySatisfiedItems > 0)
-		facts += tr("%1 already up to date").arg(summary.alreadySatisfiedItems);
-	if (summary.warningCount > 0)
-		facts += tr("%1 warnings").arg(summary.warningCount);
-
-	QString text = facts.isEmpty() ? headline : headline % QSL("\n") % facts.join(QSL(", "));
-
-	// The bounded representative diagnostics: failures carry the incomplete work, warnings the recoverable
-	// conditions. Show failures first; they are what the user must act on.
-	for (const OperationDiagnostic& failure : summary.representativeFailures)
-		text += QSL("\n") % fileOperationDiagnosticText(failure);
-	for (const OperationDiagnostic& warning : summary.representativeWarnings)
-		text += QSL("\n") % fileOperationDiagnosticText(warning);
-
-	return text;
 }
 
 Decision CFileOperationDialog::presentDecision(const DecisionRequest& request)

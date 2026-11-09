@@ -115,8 +115,9 @@ A row's context menu reveals either side in the system file manager (qtutils' `r
 or copies its full path.
 
 `CFileOperationPrompt` renders one decision request: only the actions the engine allows, the "remaining matching
-issues" scope where permitted, and a rename row when renaming is offered. `fileoperationtexts` holds the wording the
-dialogs and hosts share, request validation errors included.
+issues" scope where permitted, and a rename row when renaming is offered. The wording the dialogs and hosts share, from
+request validation errors to the completion summary, is in the engine's header-only `fileoperationtexts.h`, so a host
+without widgets uses it too.
 
 ## Directory scanning (`directoryscan/`)
 

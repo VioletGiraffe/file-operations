@@ -5,6 +5,7 @@
 
 #include "fileoperationsui/cfileoperationdialog.h"
 
+#include "fileoperations/fileoperationtexts.h"
 #include "fileoperations/operationtesthooks.h"
 
 
@@ -351,13 +352,13 @@ TEST_CASE("dialog: two operations run simultaneously", "[fileoperationdialog]")
 
 TEST_CASE("dialog: only a diagnostic outcome needs the user's attention", "[fileoperationdialog]")
 {
-	CHECK(!CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .completedItems = 3 }));
-	CHECK(!CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .skippedItems = 2, .alreadySatisfiedItems = 1 }));
-	CHECK(!CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Cancelled, .completedItems = 1 }));
+	CHECK(!fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .completedItems = 3 }));
+	CHECK(!fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .skippedItems = 2, .alreadySatisfiedItems = 1 }));
+	CHECK(!fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Cancelled, .completedItems = 1 }));
 
-	CHECK(CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .completedItems = 3, .warningCount = 1 }));
-	CHECK(CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Cancelled, .failedItems = 1 }));
-	CHECK(CFileOperationDialog::outcomeNeedsAttention(OperationSummary{ .status = CompletionStatus::Failed })); // A scan failure counts no items
+	CHECK(fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Completed, .completedItems = 3, .warningCount = 1 }));
+	CHECK(fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Cancelled, .failedItems = 1 }));
+	CHECK(fileOperationNeedsAttention(OperationSummary{ .status = CompletionStatus::Failed })); // A scan failure counts no items
 }
 
 TEST_CASE("dialog: a self-disposing dialog outlives its operation only for a diagnostic", "[fileoperationdialog]")
@@ -411,7 +412,7 @@ TEST_CASE("dialog: completion text summarizes the outcome", "[fileoperationdialo
 	{
 		const OperationSummary summary{ .status = CompletionStatus::Completed, .completedItems = 5, .skippedItems = 2,
 			.failedItems = 1, .alreadySatisfiedItems = 3, .warningCount = 4 };
-		const QString text = CFileOperationDialog::composeSummaryText(summary, PromptOperation::Copy);
+		const QString text = fileOperationSummaryText(summary, PromptOperation::Copy);
 		CHECK(text.contains(QStringLiteral("5 items copied")));
 		CHECK(text.contains(QStringLiteral("2 skipped")));
 		CHECK(text.contains(QStringLiteral("1 failed")));
@@ -422,14 +423,14 @@ TEST_CASE("dialog: completion text summarizes the outcome", "[fileoperationdialo
 	SECTION("an all-already-satisfied run states only what it found")
 	{
 		const OperationSummary summary{ .status = CompletionStatus::Completed, .alreadySatisfiedItems = 2 };
-		const QString text = CFileOperationDialog::composeSummaryText(summary, PromptOperation::Move);
+		const QString text = fileOperationSummaryText(summary, PromptOperation::Move);
 		CHECK(text.contains(QStringLiteral("2 already up to date")));
 	}
 
 	SECTION("cancellation is stated")
 	{
 		const OperationSummary summary{ .status = CompletionStatus::Cancelled, .completedItems = 1 };
-		CHECK(CFileOperationDialog::composeSummaryText(summary, PromptOperation::Delete).contains(QStringLiteral("cancelled")));
+		CHECK(fileOperationSummaryText(summary, PromptOperation::Delete).contains(QStringLiteral("cancelled")));
 	}
 
 	SECTION("representative failures are listed with the affected entry and reason")
@@ -446,7 +447,7 @@ TEST_CASE("dialog: completion text summarizes the outcome", "[fileoperationdialo
 			FailureDetails{ FailedAction::CleanupStaging, failedEntry, CFileSystemError{ FileErrorCategory::PermissionDenied, 5, {} } },
 			EntrySnapshot{ source, OperationEntryKind::RegularFile, 0 }, {} });
 
-		const QString text = CFileOperationDialog::composeSummaryText(summary, PromptOperation::Move);
+		const QString text = fileOperationSummaryText(summary, PromptOperation::Move);
 		CHECK(text.contains(QStringLiteral("stuck.tmp")));
 		CHECK(!text.contains(QStringLiteral("source.bin")));
 		CHECK(text.contains(QStringLiteral("access denied")));
@@ -464,7 +465,7 @@ TEST_CASE("dialog: completion text summarizes the outcome", "[fileoperationdialo
 			FailureDetails{ FailedAction::PreserveDirectoryTimestamps, warnedEntry, CFileSystemError{ FileErrorCategory::PermissionDenied, 5, {} } },
 			EntrySnapshot{ warnedEntry, OperationEntryKind::Directory, 0 }, {} });
 
-		const QString text = CFileOperationDialog::composeSummaryText(summary, PromptOperation::Copy);
+		const QString text = fileOperationSummaryText(summary, PromptOperation::Copy);
 		CHECK(text.contains(QStringLiteral("1 warnings")));
 		CHECK(text.contains(QStringLiteral("slowdir")));
 		CHECK(text.contains(QStringLiteral("access denied")));

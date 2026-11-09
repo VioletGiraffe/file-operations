@@ -15,6 +15,7 @@ HEADERS += \
 	$$PWD/cfileoperationjob.h \
 	$$PWD/inlinerename.h \
 	$$PWD/batchrename.h \
+	$$PWD/fileoperationtexts.h \
 	$$PWD/operationtesthooks.h
 
 SOURCES += \

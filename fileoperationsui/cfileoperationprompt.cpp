@@ -1,7 +1,6 @@
 #include "cfileoperationprompt.h"
 
-#include "fileoperationtexts.h"
-
+#include "fileoperations/fileoperationtexts.h"
 #include "fileoperations/newnamecheck.h"
 
 

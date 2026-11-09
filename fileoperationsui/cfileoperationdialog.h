@@ -1,8 +1,7 @@
 #pragma once
 
-#include "fileoperationtexts.h" // PromptOperation
-
 #include "fileoperations/cfileoperationjob.h"
+#include "fileoperations/fileoperationtexts.h" // PromptOperation
 
 
 // Submodule includes
@@ -53,14 +52,6 @@ public:
 	// The completed operation's summary once finished; nullopt while still running. Presentation state,
 	// also the component tests' assertion surface.
 	[[nodiscard]] const std::optional<OperationSummary>& result() const noexcept { return _result; }
-
-	// The human-readable completion text the dialog shows, composed from the summary's counters and
-	// bounded diagnostics. Static and pure so it can be verified directly.
-	[[nodiscard]] static QString composeSummaryText(const OperationSummary& summary, PromptOperation operation);
-
-	// Whether the finished operation left something the user must act on. Only that keeps the dialog on
-	// screen after completion; every other outcome disposes of it silently.
-	[[nodiscard]] static bool outcomeNeedsAttention(const OperationSummary& summary) noexcept;
 
 	// The cancellation action without the confirmation prompt: request cancellation (never joins) and
 	// lock out further control. The Cancel button wraps this in a confirmation; tests call it directly.

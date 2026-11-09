@@ -1,4 +1,9 @@
-#include "fileoperationtexts.h"
+#pragma once
+
+#include "fileoperations/fileoperationtypes.h"
+#include "fileoperations/inlinerename.h"
+#include "fileoperations/newnamecheck.h"
+
 
 // Submodule includes
 #include "compiler/compiler_warnings_control.h"
@@ -7,8 +12,41 @@
 DISABLE_COMPILER_WARNINGS
 #include <QDir>
 #include <QObject>
+#include <QString>
 #include <QStringBuilder>
+#include <QStringList>
 RESTORE_COMPILER_WARNINGS
+
+// The operation whose issue is being presented; selects consequence wording only
+// (e.g. "Make writable and move" versus "and delete"), never the available policy.
+enum class PromptOperation
+{
+	Copy,
+	Move,
+	Delete
+};
+
+// Shared user-facing formatting for file-operation types, used by the dialogs and by hosts so the wording has a
+// single source.
+[[nodiscard]] inline QString fileOperationEntryKindNoun(OperationEntryKind kind);
+[[nodiscard]] inline QString fileOperationIssueText(const OperationIssue& issue, PromptOperation operation);
+// The issue kind as a column heading: "Already exists", "Type mismatch", ...
+[[nodiscard]] inline QString fileOperationIssueKindText(IssueKind kind);
+[[nodiscard]] inline QString fileOperationActionLabel(DecisionAction action, PromptOperation operation);
+[[nodiscard]] inline QString fileOperationFailedActionText(FailedAction action);
+[[nodiscard]] inline QString fileSystemErrorText(const CFileSystemError& error);
+// One line for a completion diagnostic: the affected entry, the attempted action, and the reason.
+[[nodiscard]] inline QString fileOperationDiagnosticText(const OperationDiagnostic& diagnostic);
+// Why a proposed name was refused, phrased for the user. Empty for NameRejection::None.
+[[nodiscard]] inline QString newNameRejectionText(NameRejection rejection);
+// Why inlineRename did not rename, for a caller that never replaces: an occupied name is the reason. Empty for Renamed and NothingToDo.
+[[nodiscard]] inline QString inlineRenameFailureText(const InlineRenameResult& result);
+// Why makeTransferRequest() or makePermanentDeleteRequest() refused a request, phrased for the user.
+[[nodiscard]] inline QString requestValidationErrorText(RequestValidationError error);
+// The completion text: the counters, then the bounded representative diagnostics
+[[nodiscard]] inline QString fileOperationSummaryText(const OperationSummary& summary, PromptOperation operation);
+// Whether the finished operation left something the user must act on
+[[nodiscard]] inline bool fileOperationNeedsAttention(const OperationSummary& summary) noexcept;
 
 QString fileOperationEntryKindNoun(const OperationEntryKind kind)
 {
@@ -189,4 +227,49 @@ QString requestValidationErrorText(const RequestValidationError error)
 	case DestinationInsideSource: return QObject::tr("The destination cannot be inside a selected source.");
 	}
 	return {};
+}
+
+bool fileOperationNeedsAttention(const OperationSummary& summary) noexcept
+{
+	// Only diagnostics are worth a window the user has to dismiss. A clean run needs no acknowledgement,
+	// and a cancelled one was their own doing. Failed without a failed item is a job that never got that
+	// far - a scan failure - and must not vanish silently.
+	return summary.status == CompletionStatus::Failed || summary.failedItems > 0 || summary.warningCount > 0;
+}
+
+QString fileOperationSummaryText(const OperationSummary& summary, const PromptOperation operation)
+{
+	const QString verb = operation == PromptOperation::Delete ? QObject::tr("deleted")
+		: operation == PromptOperation::Move ? QObject::tr("moved") : QObject::tr("copied");
+
+	QString headline;
+	switch (summary.status)
+	{
+	case CompletionStatus::Completed: headline = QObject::tr("Operation finished."); break;
+	case CompletionStatus::Cancelled: headline = QObject::tr("Operation cancelled."); break;
+	case CompletionStatus::Failed: headline = QObject::tr("Operation failed."); break;
+	}
+
+	QStringList facts;
+	if (summary.completedItems > 0)
+		facts += QObject::tr("%1 items %2").arg(summary.completedItems).arg(verb);
+	if (summary.skippedItems > 0)
+		facts += QObject::tr("%1 skipped").arg(summary.skippedItems);
+	if (summary.failedItems > 0)
+		facts += QObject::tr("%1 failed").arg(summary.failedItems);
+	if (summary.alreadySatisfiedItems > 0)
+		facts += QObject::tr("%1 already up to date").arg(summary.alreadySatisfiedItems);
+	if (summary.warningCount > 0)
+		facts += QObject::tr("%1 warnings").arg(summary.warningCount);
+
+	QString text = facts.isEmpty() ? headline : headline % QLatin1Char('\n') % facts.join(QLatin1String(", "));
+
+	// The bounded representative diagnostics: failures carry the incomplete work, warnings the recoverable
+	// conditions. Show failures first; they are what the user must act on.
+	for (const OperationDiagnostic& failure : summary.representativeFailures)
+		text += QLatin1Char('\n') % fileOperationDiagnosticText(failure);
+	for (const OperationDiagnostic& warning : summary.representativeWarnings)
+		text += QLatin1Char('\n') % fileOperationDiagnosticText(warning);
+
+	return text;
 }

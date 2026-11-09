@@ -1,8 +1,8 @@
 #pragma once
 
 #include "cconflictlistmodel.h"
-#include "fileoperationtexts.h" // PromptOperation
 
+#include "fileoperations/fileoperationtexts.h" // PromptOperation
 #include "fileoperations/fileoperationtypes.h"
 
 

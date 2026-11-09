@@ -46,8 +46,8 @@ directory scanning and folder comparison.
 
 | Folder | Contents | Library |
 |--------|----------|---------|
-| `fileoperations/` | The engine. QtCore only. | `fileoperations` |
-| `fileoperationsui/` | `CFileOperationDialog`, `CFileOperationPrompt`, user-facing wording. QtWidgets. | `fileoperationsui` |
+| `fileoperations/` | The engine, and the user-facing wording any front end shares. QtCore only. | `fileoperations` |
+| `fileoperationsui/` | `CFileOperationDialog`, `CFileOperationPrompt`. QtWidgets. | `fileoperationsui` |
 | `directoryscan/` | `scanDirectory()` and `QString`-path access to thin_io. | `fileoperations` |
 | `foldercomparison/` | `compareFolders()`, `compareFileContents()`. Needs `directoryscan`. | `fileoperations` |
 | `paths/` | Path text grammar: absolute roots, lexical normalization. | `fileoperations` |

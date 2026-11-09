@@ -1,7 +1,6 @@
 #pragma once
 
-#include "fileoperationtexts.h" // PromptOperation
-
+#include "fileoperations/fileoperationtexts.h" // PromptOperation
 #include "fileoperations/fileoperationtypes.h"
 
 
