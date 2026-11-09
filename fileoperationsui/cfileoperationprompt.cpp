@@ -1,23 +1,20 @@
 #include "cfileoperationprompt.h"
 
 #include "fileoperations/fileoperationtexts.h"
-#include "fileoperations/newnamecheck.h"
 
 
 // Submodule includes
-#include "utils/displayformatting.h"
+#include "compiler/compiler_warnings_control.h"
 
 
 DISABLE_COMPILER_WARNINGS
 #include "ui_cfileoperationprompt.h"
 
-#include <QDateTime>
 #include <QDir>
-#include <QFileInfo>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QStringBuilder>
 RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
@@ -25,19 +22,6 @@ RESTORE_COMPILER_WARNINGS
 
 namespace
 {
-
-QString entryDetails(const EntrySnapshot& entry)
-{
-	QString details = fileOperationEntryKindNoun(entry.kind);
-	if (entry.kind == OperationEntryKind::RegularFile || entry.kind == OperationEntryKind::FileLink)
-		details += QLatin1String(", ") % fileSizeToString(entry.size);
-
-	// Display-only re-inspection: the snapshot deliberately carries no timestamps.
-	const QFileInfo info{ entry.path.value() };
-	if (info.exists())
-		details += QObject::tr(", modified %1").arg(info.lastModified().toString(QStringLiteral("dd.MM.yyyy hh:mm")));
-	return details;
-}
 
 QString buttonName(const DecisionAction action)
 {
@@ -55,24 +39,6 @@ QString buttonName(const DecisionAction action)
 	return {};
 }
 
-// The action Enter performs. Where the user must read the prompt and choose deliberately there is none: no
-// default button leaves Enter inert, since every button here has autoDefault off.
-std::optional<DecisionAction> defaultActionFor(const IssueKind kind)
-{
-	using enum DecisionAction;
-	switch (kind)
-	{
-	case IssueKind::FileReplacement: return Replace;
-	case IssueKind::RootDirectoryMerge: return Merge;
-	case IssueKind::ActionFailed: return Retry;
-	case IssueKind::TypeMismatch: // Nothing to proceed with: an entry cannot replace one of a different type
-	case IssueKind::ReadOnlySourceRemoval: // Overriding the read-only flag to delete the file must be deliberate
-	case IssueKind::UnsupportedEntry: // Only Skip and Cancel exist, and neither should happen by reflex
-		return {};
-	}
-	return {};
-}
-
 } // namespace
 
 CFileOperationPrompt::CFileOperationPrompt(const DecisionRequest& request, const PromptOperation operation, QWidget* parent) :
@@ -83,13 +49,7 @@ CFileOperationPrompt::CFileOperationPrompt(const DecisionRequest& request, const
 {
 	ui->setupUi(this);
 
-	switch (_operation)
-	{
-	case PromptOperation::Copy: setWindowTitle(tr("Copy")); break;
-	case PromptOperation::Move: setWindowTitle(tr("Move")); break;
-	case PromptOperation::Delete: setWindowTitle(tr("Delete")); break;
-	}
-
+	setWindowTitle(fileOperationName(_operation));
 	ui->lblQuestion->setText(fileOperationIssueText(_request.issue, _operation));
 	setupEntryInfo();
 	setupAuxiliaryTexts();
@@ -126,22 +86,10 @@ void CFileOperationPrompt::onActionChosen(const DecisionAction action)
 
 bool CFileOperationPrompt::renameNameAccepted()
 {
-	const QString name = ui->renameEdit->text();
-	if (const NameRejection rejection = checkNewEntryName(name); rejection != NameRejection::None)
-	{
-		QMessageBox::warning(this, tr("Cannot use this name"), newNameRejectionText(rejection));
-		return false;
-	}
-
-	// An unchanged name is not a rename; an exact-case respell of the same name is, hence the case-sensitive compare.
-	if (name == _request.issue.source.path.name())
-	{
-		QMessageBox::warning(this, tr("Nothing to rename"),
-			tr("This is already the entry's name. Enter a different one to rename it."));
-		return false;
-	}
-
-	return true;
+	const auto refusal = renameRefusal(ui->renameEdit->text(), _request.issue.source.path.name());
+	if (refusal)
+		QMessageBox::warning(this, refusal->title, refusal->text);
+	return !refusal;
 }
 
 void CFileOperationPrompt::updateRenameControls()
@@ -150,8 +98,7 @@ void CFileOperationPrompt::updateRenameControls()
 	// one Enter falls back to the kind's own default - which may be none. Otherwise typing a name and pressing Enter
 	// from the edit would run the kind's default action on the original name.
 	// The button stays enabled either way: a refusal the user can read beats a dead control they cannot explain.
-	const QString name = ui->renameEdit->text();
-	const bool renameUsable = checkNewEntryName(name) == NameRejection::None && name != _request.issue.source.path.name();
+	const bool renameUsable = !renameRefusal(ui->renameEdit->text(), _request.issue.source.path.name());
 	_renameButton->setDefault(renameUsable);
 	if (!renameUsable && _defaultButton)
 		_defaultButton->setDefault(true);
@@ -164,7 +111,7 @@ void CFileOperationPrompt::createActionButtons()
 	{
 		auto* button = new QPushButton{ fileOperationActionLabel(action, _operation), this };
 		button->setObjectName(buttonName(action));
-		button->setAutoDefault(false);
+		button->setAutoDefault(false); // Enter does nothing in a prompt without a default action
 		button->setDefault(defaultAction && action == *defaultAction);
 		connect(button, &QPushButton::clicked, this, [this, action] { onActionChosen(action); });
 		ui->buttonsLayout->addWidget(button);
@@ -197,12 +144,12 @@ void CFileOperationPrompt::setupEntryInfo()
 	const OperationIssue& issue = _request.issue;
 
 	ui->lblSourcePath->setText(QDir::toNativeSeparators(issue.source.path.value()));
-	ui->lblSourceDetails->setText(entryDetails(issue.source));
+	ui->lblSourceDetails->setText(fileOperationEntryDetailsText(issue.source));
 
 	if (issue.destination)
 	{
 		ui->lblDestinationPath->setText(QDir::toNativeSeparators(issue.destination->path.value()));
-		ui->lblDestinationDetails->setText(entryDetails(*issue.destination));
+		ui->lblDestinationDetails->setText(fileOperationEntryDetailsText(*issue.destination));
 	}
 	else
 	{
@@ -216,33 +163,17 @@ void CFileOperationPrompt::setupAuxiliaryTexts()
 {
 	const OperationIssue& issue = _request.issue;
 
-	if (issue.failure)
-	{
-		// For ActionFailed the headline already names the attempted action; other kinds carry a raced
-		// failure and present it in full.
-		QString failureText = issue.kind == IssueKind::ActionFailed
-			? tr("Reason: %1").arg(fileSystemErrorText(issue.failure->filesystemError))
-			: tr("%1 failed: %2").arg(fileOperationFailedActionText(issue.failure->action), fileSystemErrorText(issue.failure->filesystemError));
-		// The source is already on display.
-		if (issue.failure->path != issue.source.path)
-			failureText += QLatin1Char('\n') % tr("Affected entry: %1").arg(QDir::toNativeSeparators(issue.failure->path.value()));
-		ui->lblFailure->setText(failureText);
-	}
-	else
-		ui->lblFailure->hide();
+	const auto setTextOrHide = [](QLabel* label, const QString& text) {
+		if (text.isEmpty())
+			label->hide();
+		else
+			label->setText(text);
+	};
+	setTextOrHide(ui->lblFailure, fileOperationIssueFailureText(issue));
+	setTextOrHide(ui->lblConsequences, fileOperationCancelConsequencesText(_request));
 
-	// A request that disallows the remaining-matching scope is a committed-cleanup prompt: publication has
-	// already succeeded, so Cancel's consequences are worth spelling out.
-	if (!_request.remainingMatchingScopeAllowed)
-		ui->lblConsequences->setText(tr("Cancelling stops the operation: items already moved keep their new location, "
-			"this item keeps both its source and its published destination, and the remaining items are left untouched."));
-	else
-		ui->lblConsequences->hide();
-
-	const bool scopeOffered = _request.remainingMatchingScopeAllowed
-		&& std::ranges::any_of(_request.allowedActions, [&issue](const DecisionAction action) { return isActionRememberable(issue.kind, action); });
-	if (scopeOffered)
-		ui->scopeCheckBox->setText(scopeLabel());
+	if (remainingMatchingScopeOffered(_request))
+		ui->scopeCheckBox->setText(fileOperationScopeLabel(issue.kind));
 	else
 		ui->scopeCheckBox->hide();
 
@@ -256,20 +187,4 @@ void CFileOperationPrompt::setupAuxiliaryTexts()
 		ui->lblRenameCaption->hide();
 		ui->renameEdit->hide();
 	}
-}
-
-QString CFileOperationPrompt::scopeLabel() const
-{
-	using enum IssueKind;
-	switch (_request.issue.kind)
-	{
-	case FileReplacement: return tr("Apply to all remaining file collisions");
-	case RootDirectoryMerge: return tr("Apply to all remaining folder collisions");
-	case TypeMismatch: return tr("Apply to all remaining type mismatches");
-	// The remembered Skip covers any later failure, not only the currently named action - say so.
-	case ActionFailed: return tr("Apply to any further failures, not only this one");
-	case ReadOnlySourceRemoval: return tr("Apply to all remaining read-only items");
-	case UnsupportedEntry: return tr("Apply to all remaining unsupported entries");
-	}
-	return {};
 }

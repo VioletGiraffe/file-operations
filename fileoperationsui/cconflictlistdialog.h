@@ -58,9 +58,9 @@ private:
 	void createSelectionMenu();
 	void createBreakdown();
 
-	// Merges every folder and gives every file replacement fileAnswer's action; nullopt leaves the row unanswered.
+	// Answers the rows as planWideActionFor decides.
 	// Starts when no row is left unanswered, otherwise shows the list with those rows selected.
-	void answerAllAndStart(const std::function<std::optional<DecisionAction>(const PlannedConflict&)>& fileAnswer);
+	void answerAllAndStart(PlanWideAnswer answer);
 	void showList();
 
 	void applyActionToSelection(DecisionAction action);

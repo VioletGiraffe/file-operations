@@ -1,12 +1,10 @@
 #include "cconflictlistdialog.h"
 
-#include "fileoperations/newnamecheck.h"
-
 
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
-#include "utils/displayformatting.h"
+#include "qtcore_helpers/displayformatting.hpp"
 #include "utils/filemanager.h"
 
 
@@ -71,21 +69,9 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 {
 	ui->setupUi(this);
 
-	switch (_operation)
-	{
-	case PromptOperation::Copy:
-		setWindowTitle(tr("Copy: conflicts"));
-		ui->btnStart->setText(tr("Copy"));
-		break;
-	case PromptOperation::Move:
-		setWindowTitle(tr("Move: conflicts"));
-		ui->btnStart->setText(tr("Move"));
-		break;
-	case PromptOperation::Delete:
-		setWindowTitle(tr("Delete: conflicts"));
-		ui->btnStart->setText(tr("Delete"));
-		break;
-	}
+	const QString operationName = fileOperationName(_operation);
+	setWindowTitle(tr("%1: conflicts").arg(operationName));
+	ui->btnStart->setText(operationName);
 
 	ui->conflictsView->setModel(&_model);
 	ui->conflictsView->expandAll();
@@ -112,26 +98,9 @@ CConflictListDialog::CConflictListDialog(ConflictPlan plan, const PromptOperatio
 	connect(ui->btnStart, &QPushButton::clicked, this, &QDialog::accept);
 	connect(ui->btnCancelOperation, &QPushButton::clicked, this, &QDialog::reject);
 	connect(ui->btnShowList, &QPushButton::clicked, this, &CConflictListDialog::showList);
-	connect(ui->btnReplaceAll, &QPushButton::clicked, this, [this] {
-		answerAllAndStart([](const PlannedConflict&) { return DecisionAction::Replace; });
-	});
-	connect(ui->btnReplaceOlder, &QPushButton::clicked, this, [this] {
-		answerAllAndStart([](const PlannedConflict& conflict) -> std::optional<DecisionAction> {
-			// Only the times decide: an unknown time, or the same time with a different size, is left for the user
-			switch (compareSides(conflict))
-			{
-			case SideComparison::DestinationOlder: return DecisionAction::Replace;
-			case SideComparison::DestinationNewer:
-			case SideComparison::SameSizeAndTime: return DecisionAction::Skip;
-			case SideComparison::SizeDiffers:
-			case SideComparison::TimeUnknown: return {};
-			}
-			return {};
-		});
-	});
-	connect(ui->btnSkipAll, &QPushButton::clicked, this, [this] {
-		answerAllAndStart([](const PlannedConflict&) { return DecisionAction::Skip; });
-	});
+	connect(ui->btnReplaceAll, &QPushButton::clicked, this, [this] { answerAllAndStart(PlanWideAnswer::ReplaceAll); });
+	connect(ui->btnReplaceOlder, &QPushButton::clicked, this, [this] { answerAllAndStart(PlanWideAnswer::ReplaceOlder); });
+	connect(ui->btnSkipAll, &QPushButton::clicked, this, [this] { answerAllAndStart(PlanWideAnswer::SkipAll); });
 	connect(ui->btnQuickRename, &QPushButton::clicked, this, [this] {
 		if (askRowRename(_model.planRow(_model.index(0, 0))))
 			accept();
@@ -318,18 +287,11 @@ void CConflictListDialog::createBreakdown()
 	ui->breakdownLayout->setColumnStretch(1, 1);
 }
 
-void CConflictListDialog::answerAllAndStart(const std::function<std::optional<DecisionAction>(const PlannedConflict&)>& fileAnswer)
+void CConflictListDialog::answerAllAndStart(const PlanWideAnswer answer)
 {
 	for (size_t i = 0; i < _model.rowsTotal(); ++i)
 	{
-		const PlannedConflict& conflict = _model.conflict(i);
-		std::optional<DecisionAction> action;
-		if (conflict.issue.kind == IssueKind::RootDirectoryMerge)
-			action = DecisionAction::Merge;
-		else if (conflict.issue.kind == IssueKind::FileReplacement)
-			action = fileAnswer(conflict);
-
-		if (action)
+		if (const auto action = planWideActionFor(_model.conflict(i), answer))
 			_model.setResolution(i, Decision{ *action });
 	}
 
@@ -395,15 +357,9 @@ bool CConflictListDialog::askRowRename(const size_t planRow)
 	if (!newName)
 		return false;
 
-	if (const NameRejection rejection = checkNewEntryName(*newName); rejection != NameRejection::None)
+	if (const auto refusal = renameRefusal(*newName, currentName))
 	{
-		QMessageBox::warning(this, tr("Cannot use this name"), newNameRejectionText(rejection));
-		return false;
-	}
-	// An unchanged name is not a rename; an exact-case respell of the same name is, hence the case-sensitive compare.
-	if (*newName == currentName)
-	{
-		QMessageBox::warning(this, tr("Nothing to rename"), tr("This is already the entry's name. Enter a different one to rename it."));
+		QMessageBox::warning(this, refusal->title, refusal->text);
 		return false;
 	}
 

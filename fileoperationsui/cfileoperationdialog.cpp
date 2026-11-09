@@ -7,9 +7,7 @@
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
-#include "math/math.hpp"
 #include "qtcore_helpers/qstring_helpers.hpp" // QSL
-#include "utils/displayformatting.h"
 
 
 DISABLE_COMPILER_WARNINGS
@@ -32,81 +30,15 @@ namespace
 // dispose of themselves within it, so they never flash a window on screen.
 constexpr int firstShowDelay = 500;
 
-PromptOperation operationFromRequest(const FileOperationRequest& request)
-{
-	if (const auto* transfer = std::get_if<TransferRequest>(&request))
-		return transfer->kind == TransferKind::Move ? PromptOperation::Move : PromptOperation::Copy;
-	return PromptOperation::Delete;
-}
-
-PrimaryProgressUnit unitFromRequest(const FileOperationRequest& request)
-{
-	return std::holds_alternative<PermanentDeleteRequest>(request) ? PrimaryProgressUnit::Items : PrimaryProgressUnit::Bytes;
-}
-
-QString operationVerb(const PromptOperation operation)
-{
-	switch (operation)
-	{
-	case PromptOperation::Copy: return QObject::tr("Copying");
-	case PromptOperation::Move: return QObject::tr("Moving");
-	case PromptOperation::Delete: return QObject::tr("Deleting");
-	}
-	return {};
-}
-
-// The deepest folder holding every source; nullopt when the sources share no root
-std::optional<CEntryPath> commonSourceFolder(const std::vector<CEntryPath>& sources)
-{
-	assert_and_return_r(!sources.empty(), std::nullopt);
-
-	CEntryPath folder = sources.front().parent();
-	for (const CEntryPath& source : sources)
-	{
-		while (!source.isStrictDescendantOf(folder))
-		{
-			if (folder.isRoot())
-				return std::nullopt;
-			folder = folder.parent();
-		}
-	}
-	return folder;
-}
-
-QString nativePath(const CEntryPath& path)
-{
-	return QDir::toNativeSeparators(path.value());
-}
-
-QString routeText(const FileOperationRequest& request)
-{
-	const auto* transfer = std::get_if<TransferRequest>(&request);
-	const std::optional<CEntryPath> sourceFolder = commonSourceFolder(transfer ? transfer->sources : std::get<PermanentDeleteRequest>(request).sources);
-	if (!transfer)
-		return sourceFolder ? CFileOperationDialog::tr("from %1").arg(nativePath(*sourceFolder)) : QString{};
-
-	const QString destination = nativePath(transfer->destination.path);
-	return sourceFolder ? CFileOperationDialog::tr("from %1 to %2").arg(nativePath(*sourceFolder), destination)
-		: CFileOperationDialog::tr("to %1").arg(destination);
-}
-
-// The primary-unit rate, formatted for its unit: bytes per second, or whole items per second.
-QString speedText(const uint64_t primaryUnitsPerSecond, const PrimaryProgressUnit unit)
-{
-	if (unit == PrimaryProgressUnit::Bytes)
-		return CFileOperationDialog::tr("%1/s").arg(fileSizeToString(primaryUnitsPerSecond));
-	return CFileOperationDialog::tr("%1 items/s").arg(primaryUnitsPerSecond);
-}
-
 } // namespace
 
 CFileOperationDialog::CFileOperationDialog(FileOperationRequest request, std::function<QPoint(QSize)> backgroundAnchorProvider,
 	QWidget* parent, const uint64_t transferChunkSize) :
 	QWidget(parent, Qt::Window),
 	ui(new Ui::CFileOperationDialog),
-	_operation(operationFromRequest(request)),
-	_primaryUnit(unitFromRequest(request)),
-	_routeText(routeText(request)),
+	_operation(promptOperationFor(request)),
+	_primaryUnit(primaryProgressUnitFor(request)),
+	_routeText(fileOperationRouteText(request)),
 	_backgroundAnchorProvider(mv(backgroundAnchorProvider)),
 	_job(mv(request), transferChunkSize)
 {
@@ -193,96 +125,64 @@ void CFileOperationDialog::drainEvents()
 	_draining = false;
 }
 
-void CFileOperationDialog::onOperationEvent(const OperationEvent& event)
-{
-	std::visit([this]<typename E>(const E& payload) {
-		if constexpr (std::is_same_v<E, ProgressSnapshot>)
-			renderProgress(payload);
-		else if constexpr (std::is_same_v<E, DecisionRequest>)
-			handleDecisionRequest(payload);
-		else if constexpr (std::is_same_v<E, ConflictPlan>)
-			handleConflictPlan(payload);
-		else
-			handleCompletion(payload);
-	}, event);
-}
-
 void CFileOperationDialog::renderProgress(const ProgressSnapshot& snapshot)
 {
 	if (snapshot.currentEntry)
 		ui->_lblCurrentFile->setText(QDir::toNativeSeparators(snapshot.currentEntry->value()));
+	ui->_lblStatus->setText(fileOperationProgressStatusText(snapshot, _operation, _primaryUnit));
 
 	if (snapshot.phase == OperationPhase::Scanning)
 	{
-		// Indeterminate overall bar plus the running discovered count; no total, no ETA yet.
+		// Indeterminate overall bar: no total, no ETA yet.
 		ui->_overallProgress->setMaximum(0);
 		ui->_overallProgressText->clear();
-		ui->_lblStatus->setText(tr("Scanning... %1 items found").arg(snapshot.itemsProcessed));
 		return;
 	}
 
-	const bool bytes = _primaryUnit == PrimaryProgressUnit::Bytes;
-	const uint64_t processed = bytes ? snapshot.bytesProcessed : snapshot.itemsProcessed;
-	const std::optional<uint64_t> total = bytes ? snapshot.bytesTotal
-		: (snapshot.itemsTotal ? std::optional<uint64_t>{ *snapshot.itemsTotal } : std::nullopt);
-
-	if (total && *total > 0)
+	_percentDone = overallPercent(snapshot, _primaryUnit);
+	if (_percentDone)
 	{
 		ui->_overallProgress->setMaximum(100);
-		const int percent = Math::round<int>(static_cast<double>(processed) * 100.0 / static_cast<double>(*total));
-		ui->_overallProgress->setValue(percent);
-		ui->_overallProgressText->setText(QString::number(percent) % QLatin1Char('%'));
-		_percentDone = percent;
+		ui->_overallProgress->setValue(*_percentDone);
+		ui->_overallProgressText->setText(QString::number(*_percentDone) % QLatin1Char('%'));
 	}
 	else
 	{
 		ui->_overallProgress->setMaximum(0); // Totals not yet known (a manifest is still pending)
 		ui->_overallProgressText->clear();
-		_percentDone.reset();
 	}
 	updateWindowTitle();
 
-	if (bytes && snapshot.currentEntryBytesTotal && *snapshot.currentEntryBytesTotal > 0)
+	if (_primaryUnit != PrimaryProgressUnit::Bytes)
+		return;
+	if (const std::optional<int> filePercent = currentEntryPercent(snapshot))
 	{
-		const int filePercent = Math::round<int>(static_cast<double>(snapshot.currentEntryBytesProcessed) * 100.0 / static_cast<double>(*snapshot.currentEntryBytesTotal));
-		ui->_fileProgress->setValue(filePercent);
-		ui->_fileProgressText->setText(QString::number(filePercent) % QLatin1Char('%'));
+		ui->_fileProgress->setValue(*filePercent);
+		ui->_fileProgressText->setText(QString::number(*filePercent) % QLatin1Char('%'));
 	}
-
-	QString status = operationVerb(_operation) % QSL("  ") % speedText(snapshot.primaryUnitsPerSecond, _primaryUnit);
-	if (snapshot.secondsRemaining)
-		status += QSL(", ") % secondsToTimeIntervalString(*snapshot.secondsRemaining) % QSL(" remaining");
-	ui->_lblStatus->setText(status);
 }
 
-void CFileOperationDialog::handleDecisionRequest(const DecisionRequest& request)
+Decision CFileOperationDialog::askDecision(const DecisionRequest& request)
 {
-	// A cancellation that landed after this event left the queue invalidates the prompt: do not present it.
-	if (!_job.hasPendingQuestion())
-		return;
-
 	show(); // The modal prompt must not stand alone on screen if the first show is still pending
 	ui->_overallProgress->setState(psStopped);
 	const Decision decision = presentDecision(request);
-	(void)_job.submitDecision(decision); // Cancellation or re-entrant submission may already have closed the request
 	ui->_overallProgress->setState(_paused ? psPaused : psNormal);
+	return decision;
 }
 
-void CFileOperationDialog::handleConflictPlan(const ConflictPlan& plan)
+std::optional<ConflictResolutions> CFileOperationDialog::askConflictPlan(const ConflictPlan& plan)
 {
-	if (!_job.hasPendingQuestion())
-		return;
-
 	show();
 	ui->_overallProgress->setState(psStopped);
-	if (auto resolutions = presentConflictPlan(plan))
-		(void)_job.submitConflictResolutions(mv(*resolutions));
-	else
-		requestCancellation();
+	auto resolutions = presentConflictPlan(plan);
+	if (!resolutions)
+		disableControlsAfterCancellation(); // The job cancels on this answer
 	ui->_overallProgress->setState(_paused ? psPaused : psNormal);
+	return resolutions;
 }
 
-void CFileOperationDialog::handleCompletion(const OperationSummary& summary)
+void CFileOperationDialog::onFinished(const OperationSummary& summary)
 {
 	_result = summary;
 	_eventTimer->stop();
@@ -342,6 +242,11 @@ std::optional<ConflictResolutions> CFileOperationDialog::presentConflictPlan(con
 void CFileOperationDialog::requestCancellation()
 {
 	_job.cancel();
+	disableControlsAfterCancellation();
+}
+
+void CFileOperationDialog::disableControlsAfterCancellation()
+{
 	ui->_btnCancel->setEnabled(false);
 	ui->_btnPause->setEnabled(false);
 }
@@ -422,7 +327,7 @@ bool CFileOperationDialog::confirmCancellation()
 
 void CFileOperationDialog::updateWindowTitle()
 {
-	QString title = operationVerb(_operation);
+	QString title = fileOperationProgressVerb(_operation);
 	if (!_routeText.isEmpty())
 		title += QLatin1Char(' ') % _routeText;
 
@@ -448,7 +353,7 @@ void CFileOperationDialog::closeEvent(QCloseEvent* e)
 	}
 
 	// A running operation asks first and, on confirmation, stays alive (hidden) until it truly ends;
-	// handleCompletion then disposes of it.
+	// onFinished then disposes of it.
 	if (confirmCancellation())
 	{
 		_dismissedWhileRunning = true;

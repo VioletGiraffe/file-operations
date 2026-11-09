@@ -63,15 +63,20 @@ constexpr NativeErrorCode accessDeniedCode = EACCES;
 	return *request;
 }
 
-// Drives the job the way the dialog timer does: polls processEvents, collects every event, answers
-// scripted decisions from inside the listener callback (which doubles as constant proof that the queue
-// mutex is released during dispatch), and cancels on an unscripted prompt so an unexpected decision
+// Drives the job through the raw queue: polls takeEvents, collects every event, answers scripted decisions
+// while handling the event, and cancels on an unscripted prompt so an unexpected decision
 // cannot masquerade as a worker hang.
-struct JobDriver final : CFileOperationListener
+struct JobDriver final
 {
 	explicit JobDriver(CFileOperationJob& jobUnderTest) noexcept : job{ jobUnderTest } {}
 
-	void onOperationEvent(const OperationEvent& event) override
+	void drain()
+	{
+		for (const OperationEvent& event : job.takeEvents())
+			onOperationEvent(event);
+	}
+
+	void onOperationEvent(const OperationEvent& event)
 	{
 		events.push_back(event);
 		if (const auto* plan = std::get_if<ConflictPlan>(&event))
@@ -107,7 +112,7 @@ struct JobDriver final : CFileOperationListener
 	[[nodiscard]] bool pumpToCompletion(const std::chrono::milliseconds timeout = 10s)
 	{
 		return waitUntil([this] {
-			job.processEvents(*this);
+			drain();
 			return summary() != nullptr;
 		}, timeout);
 	}
@@ -157,6 +162,34 @@ struct JobDriver final : CFileOperationListener
 	std::function<void(const ConflictPlan&)> onConflictPlan;       // Likewise
 };
 
+// Answers from processEvents' callbacks, as a front end does. An unscripted question fails the test.
+struct ScriptedListener final : CFileOperationListener
+{
+	void onProgress(const ProgressSnapshot&) override {}
+
+	Decision askDecision(const DecisionRequest& request) override
+	{
+		requestsAsked.push_back(request);
+		REQUIRE(answerRequest);
+		return answerRequest(request);
+	}
+
+	std::optional<ConflictResolutions> askConflictPlan(const ConflictPlan& plan) override
+	{
+		++plansAsked;
+		REQUIRE(answerPlan);
+		return answerPlan(plan);
+	}
+
+	void onFinished(const OperationSummary& finished) override { summary = finished; }
+
+	std::function<std::optional<ConflictResolutions>(const ConflictPlan&)> answerPlan;
+	std::function<Decision(const DecisionRequest&)> answerRequest;
+	size_t plansAsked = 0;
+	std::vector<DecisionRequest> requestsAsked;
+	std::optional<OperationSummary> summary;
+};
+
 } // namespace
 
 TEST_CASE("job: copy runs to completion with ordered events", "[fileoperationjob]")
@@ -203,7 +236,7 @@ TEST_CASE("job: copy runs to completion with ordered events", "[fileoperationjob
 
 	// The queue was fully drained with the summary; nothing arrives afterwards.
 	const size_t eventCount = driver.events.size();
-	job.processEvents(driver);
+	driver.drain();
 	CHECK(driver.events.size() == eventCount);
 	CHECK(!job.submitDecision(act(DecisionAction::Skip))); // Late responses stay rejected after completion
 }
@@ -304,7 +337,7 @@ TEST_CASE("job: status derivation and summary-before-Finished ordering", "[fileo
 
 	// Finished is flipped after the summary is queued, so one drain with no further polling must deliver it.
 	JobDriver driver{ job };
-	job.processEvents(driver);
+	driver.drain();
 	REQUIRE(driver.summaryCount() == 1);
 	CHECK(driver.summary()->status == CompletionStatus::Completed);
 	CHECK(readFileContents(base % "/dest.bin") == patternedContents(2000));
@@ -329,7 +362,7 @@ TEST_CASE("job: cancellation after Finished is inert", "[fileoperationjob]")
 
 		job.cancel();
 		CHECK(job.status() == JobStatus::Finished);
-		job.processEvents(driver);
+		driver.drain();
 		CHECK(driver.summaryCount() == 1);
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(1000));
 	}
@@ -486,7 +519,7 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 
 		job.start();
 		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
-		job.processEvents(driver); // The ConflictPlan is now out of the queue, in the dialog's hands
+		driver.drain(); // The ConflictPlan is now out of the queue, in the dialog's hands
 		REQUIRE(driver.planCount() == 1);
 
 		job.cancel();
@@ -495,6 +528,90 @@ TEST_CASE("job: decision flow", "[fileoperationjob]")
 
 		REQUIRE(driver.pumpToCompletion());
 		CHECK(driver.summary()->status == CompletionStatus::Cancelled);
+		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
+	}
+}
+
+TEST_CASE("job: processEvents asks the listener and submits its answers", "[fileoperationjob]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+
+	writeTestFile(base % "/src.bin", patternedContents(700));
+	writeTestFile(base % "/dest.bin", patternedContents(50));
+
+	CFileOperationJob job{ transferRequest(TransferKind::Copy, { base % "/src.bin" }, DestinationIntent::ExactEntry, base % "/dest.bin"), 1024 };
+	ScriptedListener listener;
+	const auto pumpToCompletion = [&] {
+		return waitUntil([&] {
+			job.processEvents(listener);
+			return listener.summary.has_value();
+		});
+	};
+
+	SECTION("a plan answer is submitted")
+	{
+		listener.answerPlan = [](const ConflictPlan&) { return ConflictResolutions{ act(DecisionAction::Replace) }; };
+
+		job.start();
+		REQUIRE(pumpToCompletion());
+
+		CHECK(listener.plansAsked == 1);
+		CHECK(listener.requestsAsked.empty());
+		CHECK(listener.summary->status == CompletionStatus::Completed);
+		CHECK(readFileContents(base % "/dest.bin") == patternedContents(700));
+	}
+
+	SECTION("a refused plan cancels the operation")
+	{
+		listener.answerPlan = [](const ConflictPlan&) { return std::nullopt; };
+
+		job.start();
+		REQUIRE(pumpToCompletion());
+
+		CHECK(listener.summary->status == CompletionStatus::Cancelled);
+		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
+	}
+
+	SECTION("a row left unanswered comes back as a decision request, and its answer is submitted")
+	{
+		listener.answerPlan = [](const ConflictPlan&) { return ConflictResolutions{ std::nullopt }; };
+		listener.answerRequest = [](const DecisionRequest&) { return act(DecisionAction::Replace); };
+
+		job.start();
+		REQUIRE(pumpToCompletion());
+
+		CHECK(listener.plansAsked == 1);
+		REQUIRE(listener.requestsAsked.size() == 1);
+		CHECK(listener.requestsAsked[0].issue.kind == IssueKind::FileReplacement);
+		CHECK(listener.summary->status == CompletionStatus::Completed);
+		CHECK(readFileContents(base % "/dest.bin") == patternedContents(700));
+	}
+
+	SECTION("a question answered before the drain is not asked")
+	{
+		job.start();
+		REQUIRE(waitUntil([&job] { return job.hasPendingQuestion(); }));
+		REQUIRE(job.submitConflictResolutions({ act(DecisionAction::Replace) }));
+
+		REQUIRE(pumpToCompletion());
+
+		CHECK(listener.plansAsked == 0);
+		CHECK(listener.summary->status == CompletionStatus::Completed);
+	}
+
+	SECTION("an answer returned after a cancellation is refused")
+	{
+		listener.answerPlan = [&job](const ConflictPlan&) {
+			job.cancel();
+			return ConflictResolutions{ act(DecisionAction::Replace) };
+		};
+
+		job.start();
+		REQUIRE(pumpToCompletion());
+
+		CHECK(listener.summary->status == CompletionStatus::Cancelled);
 		CHECK(readFileContents(base % "/dest.bin") == patternedContents(50));
 	}
 }
@@ -693,7 +810,7 @@ TEST_CASE("job: progress coalescing and barrier ordering", "[fileoperationjob]")
 
 	// Undrained queue at the prompt: the scanning and the first file's many snapshots coalesced into one, and the
 	// decision barrier was appended after it - progress published before a barrier stays before it.
-	job.processEvents(driver);
+	driver.drain();
 	REQUIRE(driver.events.size() == 2);
 	const auto* coalesced = std::get_if<ProgressSnapshot>(&driver.events[0]);
 	REQUIRE(coalesced);
@@ -800,8 +917,8 @@ TEST_CASE("job: concurrent independent jobs", "[fileoperationjob]")
 	deleteJob.start();
 
 	REQUIRE(waitUntil([&] {
-		copyJob.processEvents(copyDriver);
-		deleteJob.processEvents(deleteDriver);
+		copyDriver.drain();
+		deleteDriver.drain();
 		return copyDriver.summary() != nullptr && deleteDriver.summary() != nullptr;
 	}));
 

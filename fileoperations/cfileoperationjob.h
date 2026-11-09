@@ -9,17 +9,26 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <variant>
+#include <vector>
 
-// Everything the job delivers through processEvents(), in queue order. Repeated progress snapshots
+// Everything the job queues, in queue order. Repeated progress snapshots
 // coalesce to the latest; DecisionRequest, ConflictPlan and OperationSummary are ordering barriers.
 using OperationEvent = std::variant<ProgressSnapshot, DecisionRequest, ConflictPlan, OperationSummary>;
 
+// The front end of one job, called by processEvents(). A question's answer is its callback's return value,
+// so the callback blocks while the user decides: a modal prompt.
 class CFileOperationListener
 {
 public:
 	virtual ~CFileOperationListener() = default;
-	virtual void onOperationEvent(const OperationEvent& event) = 0;
+
+	virtual void onProgress(const ProgressSnapshot& snapshot) = 0;
+	[[nodiscard]] virtual Decision askDecision(const DecisionRequest& request) = 0;
+	// nullopt cancels the operation
+	[[nodiscard]] virtual std::optional<ConflictResolutions> askConflictPlan(const ConflictPlan& plan) = 0;
+	virtual void onFinished(const OperationSummary& summary) = 0;
 };
 
 // Derived presentation state. Pause and decision waiting are deliberately not in it: the dialog sets
@@ -60,13 +69,16 @@ public:
 	bool submitConflictResolutions(ConflictResolutions resolutions);
 
 	[[nodiscard]] JobStatus status() const;
-	// The dialog's pre-show check: a DecisionRequest or ConflictPlan already swapped out of the queue must not be
-	// presented once cancellation has invalidated it or another response has answered it.
+	// The check before presenting a question: a DecisionRequest or ConflictPlan already taken out of the queue must not
+	// be presented once cancellation has invalidated it or another response has answered it.
 	[[nodiscard]] bool hasPendingQuestion() const;
 
-	// Swaps the queued events out under the mutex, then dispatches with the mutex released: a modal
-	// prompt may enter a nested event loop and call back into the job.
+	// Delivers the queued events to the listener and submits its answers. Never asks a question that is no longer pending.
+	// Calls the listener with the mutex released: a modal prompt may enter a nested event loop and call back into the job.
+	// Must not be called from a listener callback: later events would arrive while the question is still open.
 	void processEvents(CFileOperationListener& listener);
+	// Takes the queued events, for a caller that uses submitDecision() and submitConflictResolutions() instead of a listener.
+	[[nodiscard]] std::vector<OperationEvent> takeEvents();
 
 private:
 	// --- Worker side. The flag reference is the wrapper's cancellation flag, passed into the payload. ---

@@ -272,6 +272,11 @@ struct Decision
 // Rename, Retry, and Cancel are never rememberable.
 [[nodiscard]] bool isActionRememberable(IssueKind kind, DecisionAction action);
 
+// The action Enter performs in the kind's prompt; nullopt where the user must read the prompt and choose deliberately.
+[[nodiscard]] std::optional<DecisionAction> defaultActionFor(IssueKind kind);
+// Whether the request's prompt offers the RemainingMatchingIssues scope: allowed, and some action can be remembered.
+[[nodiscard]] bool remainingMatchingScopeOffered(const DecisionRequest& request);
+
 // --- Up-front conflict planning ---
 // A transfer finds its conflicts before it writes anything the user has not yet decided on, and presents them as one
 // plan. Execution asks every question again and applies the stored answer where the same (source, kind) comes up.
@@ -288,11 +293,39 @@ struct PlannedConflict
 };
 
 using ConflictPlan = std::vector<PlannedConflict>;
-// Aligned with the plan. nullopt where no answer applies: a row under a root the user skipped or renamed away.
+// Aligned with the plan. nullopt leaves the row unanswered:
+//   under a root the user skipped or renamed away - execution never reaches the row
+//   elsewhere - execution prompts for the row when it reaches it
+// After a Rename answer planning runs again and presents the unanswered rows again.
 using ConflictResolutions = std::vector<std::optional<Decision>>;
 
 // allowedActionsFor without Retry and Cancel: Retry is only meaningful at the failing moment, and cancelling is the plan's own action.
 [[nodiscard]] AllowedActions plannableActionsFor(IssueKind kind);
+
+// A FileReplacement row's destination against its source. Times compare to the second.
+enum class SideComparison
+{
+	DestinationOlder,
+	DestinationNewer,
+	SameSizeAndTime,
+	SizeDiffers, // Same time
+	TimeUnknown
+};
+
+// Requires a FileReplacement row.
+[[nodiscard]] SideComparison compareSides(const PlannedConflict& conflict);
+
+// One answer for the whole plan
+enum class PlanWideAnswer
+{
+	ReplaceAll,
+	ReplaceOlder, // Replaces an older destination, skips a newer or identical one
+	SkipAll
+};
+
+// The row's action under the plan-wide answer: every folder merges, a file replacement follows the answer.
+// nullopt where the answer does not decide the row: another kind, and for ReplaceOlder an unknown time or the same time with another size.
+[[nodiscard]] std::optional<DecisionAction> planWideActionFor(const PlannedConflict& conflict, PlanWideAnswer answer);
 
 // --- Recursive execution result ---
 
@@ -320,6 +353,8 @@ enum class PrimaryProgressUnit
 	Items
 };
 
+[[nodiscard]] PrimaryProgressUnit primaryProgressUnitFor(const FileOperationRequest& request) noexcept;
+
 enum class OperationPhase
 {
 	Scanning,
@@ -345,6 +380,11 @@ struct ProgressSnapshot
 	uint64_t primaryUnitsPerSecond = 0;
 	std::optional<uint32_t> secondsRemaining;
 };
+
+// Of the whole job, in its primary unit. nullopt while the total is unknown, and while scanning.
+[[nodiscard]] std::optional<int> overallPercent(const ProgressSnapshot& snapshot, PrimaryProgressUnit unit);
+// Of the current entry's bytes. nullopt while its size is unknown.
+[[nodiscard]] std::optional<int> currentEntryPercent(const ProgressSnapshot& snapshot);
 
 enum class CompletionStatus
 {

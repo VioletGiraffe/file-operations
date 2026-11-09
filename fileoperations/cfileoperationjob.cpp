@@ -12,6 +12,8 @@
 
 
 #include <algorithm>
+#include <type_traits>
+#include <utility>
 
 CFileOperationJob::CFileOperationJob(FileOperationRequest request, const uint64_t transferChunkSize) :
 	_request{ mv(request) },
@@ -141,22 +143,47 @@ bool CFileOperationJob::hasPendingQuestion() const
 	return _pendingQuestion.has_value() && !_submittedAnswer.has_value() && !_thread.cancellationRequested();
 }
 
+std::vector<OperationEvent> CFileOperationJob::takeEvents()
+{
+	std::lock_guard lock{ _mutex };
+	return std::exchange(_events, {});
+}
+
 void CFileOperationJob::processEvents(CFileOperationListener& listener)
 {
-	std::vector<OperationEvent> drained;
+	for (const OperationEvent& event : takeEvents())
 	{
-		std::lock_guard lock{ _mutex };
-		drained.swap(_events);
-	}
+		std::visit([this, &listener]<typename E>(const E& payload) {
+			if constexpr (std::is_same_v<E, ProgressSnapshot>)
+				listener.onProgress(payload);
+			else if constexpr (std::is_same_v<E, DecisionRequest>)
+			{
+				if (!hasPendingQuestion())
+					return;
 
-	for (const OperationEvent& event : drained)
-		listener.onOperationEvent(event);
+				// An answer is refused when a cancellation arrived while the listener was asking
+				(void)submitDecision(listener.askDecision(payload));
+			}
+			else if constexpr (std::is_same_v<E, ConflictPlan>)
+			{
+				if (!hasPendingQuestion())
+					return;
+
+				if (auto resolutions = listener.askConflictPlan(payload))
+					(void)submitConflictResolutions(mv(*resolutions));
+				else
+					cancel();
+			}
+			else
+				listener.onFinished(payload);
+		}, event);
+	}
 }
 
 void CFileOperationJob::runOperation(const std::atomic<bool>& cancellationRequested)
 {
 	COperationExecutionContext context{
-		std::holds_alternative<PermanentDeleteRequest>(_request) ? PrimaryProgressUnit::Items : PrimaryProgressUnit::Bytes,
+		primaryProgressUnitFor(_request),
 		[this, &cancellationRequested] { return workerCheckpoint(cancellationRequested); },
 		[this, &cancellationRequested](const DecisionRequest& request) { return workerRequestDecision(request, cancellationRequested); },
 		[this, &cancellationRequested](const ConflictPlan& plan) { return workerPresentPlan(plan, cancellationRequested); },

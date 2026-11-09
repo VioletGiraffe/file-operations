@@ -6,16 +6,24 @@
 
 
 // Submodule includes
+#include "assert/advanced_assert.h"
 #include "compiler/compiler_warnings_control.h"
+#include "qtcore_helpers/displayformatting.hpp"
 
 
 DISABLE_COMPILER_WARNINGS
+#include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 #include <QObject>
 #include <QString>
 #include <QStringBuilder>
 #include <QStringList>
 RESTORE_COMPILER_WARNINGS
+
+#include <optional>
+#include <variant>
+#include <vector>
 
 // The operation whose issue is being presented; selects consequence wording only
 // (e.g. "Make writable and move" versus "and delete"), never the available policy.
@@ -47,6 +55,35 @@ enum class PromptOperation
 [[nodiscard]] inline QString fileOperationSummaryText(const OperationSummary& summary, PromptOperation operation);
 // Whether the finished operation left something the user must act on
 [[nodiscard]] inline bool fileOperationNeedsAttention(const OperationSummary& summary) noexcept;
+
+[[nodiscard]] inline PromptOperation promptOperationFor(const FileOperationRequest& request) noexcept;
+// "Copy", "Move", "Delete"
+[[nodiscard]] inline QString fileOperationName(PromptOperation operation);
+// "Copying", "Moving", "Deleting"
+[[nodiscard]] inline QString fileOperationProgressVerb(PromptOperation operation);
+// The deepest folder holding every source; nullopt when the sources share no root
+[[nodiscard]] inline std::optional<CEntryPath> commonSourceFolder(const std::vector<CEntryPath>& sources);
+// "from X to Y", X being commonSourceFolder. Without a common folder: "to Y" for a transfer, empty for a deletion.
+[[nodiscard]] inline QString fileOperationRouteText(const FileOperationRequest& request);
+// One line: the running item count while scanning, then the verb with the speed and the time remaining
+[[nodiscard]] inline QString fileOperationProgressStatusText(const ProgressSnapshot& snapshot, PromptOperation operation, PrimaryProgressUnit unit);
+// The entry's kind, its size where it has one, and its modification time. Reads the time from the filesystem.
+[[nodiscard]] inline QString fileOperationEntryDetailsText(const EntrySnapshot& entry);
+// The failure the issue carries, and the affected entry where it is not the source. Empty for an issue without a failure.
+[[nodiscard]] inline QString fileOperationIssueFailureText(const OperationIssue& issue);
+// What cancelling leaves behind, for a request whose item is already published. Empty for every other request.
+[[nodiscard]] inline QString fileOperationCancelConsequencesText(const DecisionRequest& request);
+// The label of the RemainingMatchingIssues option in the kind's prompt
+[[nodiscard]] inline QString fileOperationScopeLabel(IssueKind kind);
+[[nodiscard]] inline QString sideComparisonText(SideComparison comparison);
+
+struct RenameRefusal
+{
+	QString title;
+	QString text;
+};
+// Why newName cannot rename an entry named currentName; nullopt when it can.
+[[nodiscard]] inline std::optional<RenameRefusal> renameRefusal(const QString& newName, const QString& currentName);
 
 QString fileOperationEntryKindNoun(const OperationEntryKind kind)
 {
@@ -272,4 +309,155 @@ QString fileOperationSummaryText(const OperationSummary& summary, const PromptOp
 		text += QLatin1Char('\n') % fileOperationDiagnosticText(warning);
 
 	return text;
+}
+
+PromptOperation promptOperationFor(const FileOperationRequest& request) noexcept
+{
+	if (const auto* transfer = std::get_if<TransferRequest>(&request))
+		return transfer->kind == TransferKind::Move ? PromptOperation::Move : PromptOperation::Copy;
+	return PromptOperation::Delete;
+}
+
+QString fileOperationName(const PromptOperation operation)
+{
+	switch (operation)
+	{
+	case PromptOperation::Copy: return QObject::tr("Copy");
+	case PromptOperation::Move: return QObject::tr("Move");
+	case PromptOperation::Delete: return QObject::tr("Delete");
+	}
+	return {};
+}
+
+QString fileOperationProgressVerb(const PromptOperation operation)
+{
+	switch (operation)
+	{
+	case PromptOperation::Copy: return QObject::tr("Copying");
+	case PromptOperation::Move: return QObject::tr("Moving");
+	case PromptOperation::Delete: return QObject::tr("Deleting");
+	}
+	return {};
+}
+
+std::optional<CEntryPath> commonSourceFolder(const std::vector<CEntryPath>& sources)
+{
+	assert_and_return_r(!sources.empty(), std::nullopt);
+
+	CEntryPath folder = sources.front().parent();
+	for (const CEntryPath& source : sources)
+	{
+		while (!source.isStrictDescendantOf(folder))
+		{
+			if (folder.isRoot())
+				return std::nullopt;
+			folder = folder.parent();
+		}
+	}
+	return folder;
+}
+
+QString fileOperationRouteText(const FileOperationRequest& request)
+{
+	const auto nativePath = [](const CEntryPath& path) { return QDir::toNativeSeparators(path.value()); };
+
+	const auto* transfer = std::get_if<TransferRequest>(&request);
+	const std::optional<CEntryPath> sourceFolder = commonSourceFolder(transfer ? transfer->sources : std::get<PermanentDeleteRequest>(request).sources);
+	if (!transfer)
+		return sourceFolder ? QObject::tr("from %1").arg(nativePath(*sourceFolder)) : QString{};
+
+	const QString destination = nativePath(transfer->destination.path);
+	return sourceFolder ? QObject::tr("from %1 to %2").arg(nativePath(*sourceFolder), destination) : QObject::tr("to %1").arg(destination);
+}
+
+QString fileOperationProgressStatusText(const ProgressSnapshot& snapshot, const PromptOperation operation, const PrimaryProgressUnit unit)
+{
+	if (snapshot.phase == OperationPhase::Scanning)
+		return QObject::tr("Scanning... %1 items found").arg(snapshot.itemsProcessed);
+
+	const QString speed = unit == PrimaryProgressUnit::Bytes
+		? QObject::tr("%1/s").arg(fileSizeToString(snapshot.primaryUnitsPerSecond))
+		: QObject::tr("%1 items/s").arg(snapshot.primaryUnitsPerSecond);
+	QString status = fileOperationProgressVerb(operation) % QLatin1String("  ") % speed;
+	if (snapshot.secondsRemaining)
+		status += QLatin1String(", ") % QObject::tr("%1 remaining").arg(secondsToTimeIntervalString(*snapshot.secondsRemaining));
+	return status;
+}
+
+QString fileOperationEntryDetailsText(const EntrySnapshot& entry)
+{
+	QString details = fileOperationEntryKindNoun(entry.kind);
+	if (entry.kind == OperationEntryKind::RegularFile || entry.kind == OperationEntryKind::FileLink)
+		details += QLatin1String(", ") % fileSizeToString(entry.size);
+
+	// The snapshot deliberately carries no timestamps
+	const QFileInfo info{ entry.path.value() };
+	if (info.exists())
+		details += QObject::tr(", modified %1").arg(info.lastModified().toString(QStringLiteral("dd.MM.yyyy hh:mm")));
+	return details;
+}
+
+QString fileOperationIssueFailureText(const OperationIssue& issue)
+{
+	if (!issue.failure)
+		return {};
+
+	// For ActionFailed fileOperationIssueText already names the attempted action; other kinds carry a raced failure and present it in full.
+	QString text = issue.kind == IssueKind::ActionFailed
+		? QObject::tr("Reason: %1").arg(fileSystemErrorText(issue.failure->filesystemError))
+		: QObject::tr("%1 failed: %2").arg(fileOperationFailedActionText(issue.failure->action), fileSystemErrorText(issue.failure->filesystemError));
+	if (issue.failure->path != issue.source.path)
+		text += QLatin1Char('\n') % QObject::tr("Affected entry: %1").arg(QDir::toNativeSeparators(issue.failure->path.value()));
+	return text;
+}
+
+QString fileOperationCancelConsequencesText(const DecisionRequest& request)
+{
+	// A request that disallows the remaining-matching scope is a committed-cleanup prompt: publication has already succeeded.
+	if (request.remainingMatchingScopeAllowed)
+		return {};
+	return QObject::tr("Cancelling stops the operation: items already moved keep their new location, "
+		"this item keeps both its source and its published destination, and the remaining items are left untouched.");
+}
+
+QString fileOperationScopeLabel(const IssueKind kind)
+{
+	using enum IssueKind;
+	switch (kind)
+	{
+	case FileReplacement: return QObject::tr("Apply to all remaining file collisions");
+	case RootDirectoryMerge: return QObject::tr("Apply to all remaining folder collisions");
+	case TypeMismatch: return QObject::tr("Apply to all remaining type mismatches");
+	// The remembered Skip covers any later failure, not only the currently named action - say so.
+	case ActionFailed: return QObject::tr("Apply to any further failures, not only this one");
+	case ReadOnlySourceRemoval: return QObject::tr("Apply to all remaining read-only items");
+	case UnsupportedEntry: return QObject::tr("Apply to all remaining unsupported entries");
+	}
+	return {};
+}
+
+QString sideComparisonText(const SideComparison comparison)
+{
+	using enum SideComparison;
+	switch (comparison)
+	{
+	case DestinationOlder: return QObject::tr("Destination older");
+	case DestinationNewer: return QObject::tr("Destination newer");
+	case SameSizeAndTime: return QObject::tr("Same size and time");
+	case SizeDiffers: return QObject::tr("Same time, different size");
+	case TimeUnknown: return QObject::tr("Already exists, time unknown");
+	}
+	return {};
+}
+
+std::optional<RenameRefusal> renameRefusal(const QString& newName, const QString& currentName)
+{
+	if (const NameRejection rejection = checkNewEntryName(newName); rejection != NameRejection::None)
+		return RenameRefusal{ QObject::tr("Cannot use this name"), newNameRejectionText(rejection) };
+
+	// An unchanged name is not a rename; an exact-case respell of the same name is, hence the case-sensitive compare.
+	if (newName == currentName)
+		return RenameRefusal{ QObject::tr("Nothing to rename"), QObject::tr("This is already the entry's name. Enter a different one to rename it.") };
+
+	return {};
 }

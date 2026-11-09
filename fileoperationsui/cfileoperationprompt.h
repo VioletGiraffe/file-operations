@@ -46,8 +46,6 @@ private:
 	void setupEntryInfo();
 	void setupAuxiliaryTexts();
 
-	[[nodiscard]] QString scopeLabel() const;
-
 	Ui::CFileOperationPrompt* ui;
 	const DecisionRequest _request;
 	const PromptOperation _operation;

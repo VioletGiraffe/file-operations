@@ -5,8 +5,10 @@
 contains(DEFINES, FILE_OPERATIONS_TEST_HOOKS): FILE_OPERATIONS_LIBRARY = fileoperations_testhooks
 else: FILE_OPERATIONS_LIBRARY = fileoperations
 
+# qtutils: header-only parts, nothing to link
 INCLUDEPATH += \
 	$$PWD/.. \
+	$$PWD/../../qtutils \
 	$$PWD/../../cpputils \
 	$$PWD/../../cpp-template-utils \
 	$$PWD/../../thin_io/src

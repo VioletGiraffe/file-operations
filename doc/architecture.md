@@ -90,8 +90,10 @@ file-commander's `doc/planned-refactors/native-paths.md` for the remaining POSIX
 ## Job threading
 
 `CFileOperationJob` owns one worker and a mutex/condition-variable state machine for pause, cancellation, decisions,
-and the event queue. The worker emits progress, decision requests, and one summary; the UI drains and dispatches
-them after releasing the mutex because presenting a decision can enter a nested event loop.
+and the event queue. The worker emits progress, decision requests, and one summary. `processEvents()` delivers them to
+the front end's `CFileOperationListener` and submits the answers it returns; it calls the listener with the mutex
+released, because presenting a decision can enter a nested event loop, and never asks a question that is no longer
+pending. `takeEvents()` is the raw queue, for a caller that submits its answers itself.
 
 Progress may coalesce, while decisions and the final summary preserve ordering. State mutations used by wait
 predicates occur under the same mutex before notification. Cancellation releases every wait and invalidates an
@@ -99,7 +101,7 @@ undrained decision. Job destruction cancels, wakes, and joins; owning UI objects
 
 ## Dialogs (`fileoperationsui/`)
 
-`CFileOperationDialog` owns one `CFileOperationJob`, drains typed events, presents only the decisions offered by the
+`CFileOperationDialog` owns one `CFileOperationJob`, is its listener, presents only the decisions offered by the
 core, and formats the outcome. It may remain hidden for quick success, appear for a decision or background
 operation, and keep a completed summary visible only when it needs attention. Closing an active dialog suppresses
 later display but does not weaken job/listener lifetime requirements.
@@ -115,9 +117,12 @@ A row's context menu reveals either side in the system file manager (qtutils' `r
 or copies its full path.
 
 `CFileOperationPrompt` renders one decision request: only the actions the engine allows, the "remaining matching
-issues" scope where permitted, and a rename row when renaming is offered. The wording the dialogs and hosts share, from
-request validation errors to the completion summary, is in the engine's header-only `fileoperationtexts.h`, so a host
-without widgets uses it too.
+issues" scope where permitted, and a rename row when renaming is offered.
+
+What any front end presents the same way lives in the engine, so a host without widgets uses it too: the wording, from
+request validation errors to the progress line and the completion summary, in the header-only `fileoperationtexts.h`;
+the rules (the Enter action of a prompt, whether the scope is offered, the plan-wide answers, the progress
+percentages) beside the policy table in `fileoperationtypes.h`.
 
 ## Directory scanning (`directoryscan/`)
 

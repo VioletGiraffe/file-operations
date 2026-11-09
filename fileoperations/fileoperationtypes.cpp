@@ -3,6 +3,10 @@
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
+#include "math/math.hpp"
+
+
+#include <algorithm>
 
 namespace
 {
@@ -160,9 +164,96 @@ bool isActionRememberable(const IssueKind kind, const DecisionAction action)
 	return false;
 }
 
+std::optional<DecisionAction> defaultActionFor(const IssueKind kind)
+{
+	using enum DecisionAction;
+	switch (kind)
+	{
+	case IssueKind::FileReplacement: return Replace;
+	case IssueKind::RootDirectoryMerge: return Merge;
+	case IssueKind::ActionFailed: return Retry;
+	case IssueKind::TypeMismatch: // Nothing to proceed with: an entry cannot replace one of a different type
+	case IssueKind::ReadOnlySourceRemoval: // Overriding the read-only flag to delete the file must be deliberate
+	case IssueKind::UnsupportedEntry: // Only Skip and Cancel exist, and neither should happen by reflex
+		return {};
+	}
+	return {};
+}
+
+bool remainingMatchingScopeOffered(const DecisionRequest& request)
+{
+	return request.remainingMatchingScopeAllowed && std::ranges::any_of(request.allowedActions,
+		[&request](const DecisionAction action) { return isActionRememberable(request.issue.kind, action); });
+}
+
 AllowedActions plannableActionsFor(const IssueKind kind)
 {
 	AllowedActions actions = allowedActionsFor(kind);
 	std::erase_if(actions, [](const DecisionAction action) { return action == DecisionAction::Retry || action == DecisionAction::Cancel; });
 	return actions;
+}
+
+SideComparison compareSides(const PlannedConflict& conflict)
+{
+	const OperationIssue& issue = conflict.issue;
+	assert_and_return_r(issue.kind == IssueKind::FileReplacement && issue.destination, SideComparison::TimeUnknown);
+
+	if (!conflict.sourceLastWrite.is_set() || !conflict.destinationLastWrite.is_set())
+		return SideComparison::TimeUnknown;
+	if (conflict.destinationLastWrite.seconds < conflict.sourceLastWrite.seconds)
+		return SideComparison::DestinationOlder;
+	if (conflict.destinationLastWrite.seconds > conflict.sourceLastWrite.seconds)
+		return SideComparison::DestinationNewer;
+	return issue.destination->size == issue.source.size ? SideComparison::SameSizeAndTime : SideComparison::SizeDiffers;
+}
+
+std::optional<DecisionAction> planWideActionFor(const PlannedConflict& conflict, const PlanWideAnswer answer)
+{
+	if (conflict.issue.kind == IssueKind::RootDirectoryMerge)
+		return DecisionAction::Merge;
+	if (conflict.issue.kind != IssueKind::FileReplacement)
+		return {};
+
+	switch (answer)
+	{
+	case PlanWideAnswer::ReplaceAll: return DecisionAction::Replace;
+	case PlanWideAnswer::SkipAll: return DecisionAction::Skip;
+	case PlanWideAnswer::ReplaceOlder:
+		// Only the times decide: an unknown time, or the same time with a different size, is left for the user
+		switch (compareSides(conflict))
+		{
+		case SideComparison::DestinationOlder: return DecisionAction::Replace;
+		case SideComparison::DestinationNewer:
+		case SideComparison::SameSizeAndTime: return DecisionAction::Skip;
+		case SideComparison::SizeDiffers:
+		case SideComparison::TimeUnknown: return {};
+		}
+	}
+	return {};
+}
+
+PrimaryProgressUnit primaryProgressUnitFor(const FileOperationRequest& request) noexcept
+{
+	return std::holds_alternative<PermanentDeleteRequest>(request) ? PrimaryProgressUnit::Items : PrimaryProgressUnit::Bytes;
+}
+
+std::optional<int> overallPercent(const ProgressSnapshot& snapshot, const PrimaryProgressUnit unit)
+{
+	if (snapshot.phase == OperationPhase::Scanning)
+		return {};
+
+	const bool bytes = unit == PrimaryProgressUnit::Bytes;
+	const uint64_t processed = bytes ? snapshot.bytesProcessed : snapshot.itemsProcessed;
+	const std::optional<uint64_t> total = bytes ? snapshot.bytesTotal
+		: (snapshot.itemsTotal ? std::optional<uint64_t>{ *snapshot.itemsTotal } : std::nullopt);
+	if (!total || *total == 0)
+		return {};
+	return Math::round<int>(static_cast<double>(processed) * 100.0 / static_cast<double>(*total));
+}
+
+std::optional<int> currentEntryPercent(const ProgressSnapshot& snapshot)
+{
+	if (!snapshot.currentEntryBytesTotal || *snapshot.currentEntryBytesTotal == 0)
+		return {};
+	return Math::round<int>(static_cast<double>(snapshot.currentEntryBytesProcessed) * 100.0 / static_cast<double>(*snapshot.currentEntryBytesTotal));
 }

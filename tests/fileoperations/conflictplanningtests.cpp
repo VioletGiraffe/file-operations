@@ -298,6 +298,46 @@ TEST_CASE("conflict planning: rows under a skipped root need no answer", "[plann
 	CHECK(readFileContents(base % "/dest/src/a.bin") == QByteArray{ "OLD A" });
 }
 
+TEST_CASE("conflict planning: a row left unanswered is prompted for when execution reaches it", "[planning]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+
+	REQUIRE(QDir{}.mkpath(base % "/src"));
+	writeTestFile(base % "/src/a.bin", patternedContents(100));
+	writeTestFile(base % "/src/b.bin", patternedContents(200));
+	REQUIRE(QDir{}.mkpath(base % "/dest/src"));
+	writeTestFile(base % "/dest/src/a.bin", QByteArray{ "OLD A" });
+	writeTestFile(base % "/dest/src/b.bin", QByteArray{ "OLD B" });
+
+	OperationScript script;
+	script.answerPlan = [](const ConflictPlan& plan) {
+		REQUIRE(plan.size() == 3);
+		ConflictResolutions resolutions;
+		for (const PlannedConflict& row : plan)
+		{
+			if (row.issue.kind == IssueKind::RootDirectoryMerge)
+				resolutions.emplace_back(act(DecisionAction::Merge));
+			else if (row.issue.source.path.name() == QLatin1String("a.bin"))
+				resolutions.emplace_back(act(DecisionAction::Skip));
+			else
+				resolutions.emplace_back(std::nullopt);
+		}
+		return resolutions;
+	};
+	script.decisions = { act(DecisionAction::Replace) }; // The live prompt's answer
+	const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+	CHECK(summary.status == CompletionStatus::Completed);
+	CHECK(script.seenPlans.size() == 1);
+	REQUIRE(script.seenRequests.size() == 1);
+	CHECK(script.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+	CHECK(script.seenRequests[0].issue.source.path.name() == QLatin1String("b.bin"));
+	CHECK(readFileContents(base % "/dest/src/a.bin") == QByteArray{ "OLD A" });
+	CHECK(readFileContents(base % "/dest/src/b.bin") == patternedContents(200));
+}
+
 TEST_CASE("conflict planning: a move plans the questions of its copy-based path", "[planning]")
 {
 	QTemporaryDir tempDir;

@@ -88,15 +88,15 @@ protected:
 	void closeEvent(QCloseEvent* e) override;
 
 private:
-	void onOperationEvent(const OperationEvent& event) override;
-
-	void handleDecisionRequest(const DecisionRequest& request);
-	void handleConflictPlan(const ConflictPlan& plan);
-	void handleCompletion(const OperationSummary& summary);
+	void onProgress(const ProgressSnapshot& snapshot) override { renderProgress(snapshot); }
+	[[nodiscard]] Decision askDecision(const DecisionRequest& request) override;
+	[[nodiscard]] std::optional<ConflictResolutions> askConflictPlan(const ConflictPlan& plan) override;
+	void onFinished(const OperationSummary& summary) override;
 
 	void togglePause();
 	void switchToBackground();
 	[[nodiscard]] bool confirmCancellation();
+	void disableControlsAfterCancellation();
 
 	void updateWindowTitle();
 

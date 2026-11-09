@@ -4,7 +4,7 @@
 // Submodule includes
 #include "assert/advanced_assert.h"
 #include "lang/utils.hpp" // mv()
-#include "utils/displayformatting.h"
+#include "qtcore_helpers/displayformatting.hpp"
 
 
 DISABLE_COMPILER_WARNINGS
@@ -56,34 +56,6 @@ bool answeredSkipOrRename(const std::optional<Decision>& resolution) noexcept
 }
 
 } // namespace
-
-SideComparison compareSides(const PlannedConflict& conflict)
-{
-	const OperationIssue& issue = conflict.issue;
-	assert_and_return_r(issue.kind == IssueKind::FileReplacement && issue.destination, SideComparison::TimeUnknown);
-
-	if (!conflict.sourceLastWrite.is_set() || !conflict.destinationLastWrite.is_set())
-		return SideComparison::TimeUnknown;
-	if (conflict.destinationLastWrite.seconds < conflict.sourceLastWrite.seconds)
-		return SideComparison::DestinationOlder;
-	if (conflict.destinationLastWrite.seconds > conflict.sourceLastWrite.seconds)
-		return SideComparison::DestinationNewer;
-	return issue.destination->size == issue.source.size ? SideComparison::SameSizeAndTime : SideComparison::SizeDiffers;
-}
-
-QString sideComparisonText(const SideComparison comparison)
-{
-	using enum SideComparison;
-	switch (comparison)
-	{
-	case DestinationOlder: return QObject::tr("Destination older");
-	case DestinationNewer: return QObject::tr("Destination newer");
-	case SameSizeAndTime: return QObject::tr("Same size and time");
-	case SizeDiffers: return QObject::tr("Same time, different size");
-	case TimeUnknown: return QObject::tr("Already exists, time unknown");
-	}
-	return {};
-}
 
 CConflictListModel::CConflictListModel(ConflictPlan plan, const PromptOperation operation, QObject* parent)
 	: QAbstractItemModel{ parent }
