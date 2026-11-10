@@ -4,7 +4,8 @@ HEADERS += \
 	$$PWD/cconflictlistdialog.h \
 	$$PWD/cconflictlistmodel.h \
 	$$PWD/cfileoperationdialog.h \
-	$$PWD/cfileoperationprompt.h
+	$$PWD/cfileoperationprompt.h \
+	$$PWD/usermessagebox.h
 
 SOURCES += \
 	$$PWD/cconflictlistdialog.cpp \

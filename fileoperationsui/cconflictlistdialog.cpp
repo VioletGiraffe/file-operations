@@ -1,4 +1,5 @@
 #include "cconflictlistdialog.h"
+#include "usermessagebox.h"
 
 
 // Submodule includes
@@ -359,7 +360,7 @@ bool CConflictListDialog::askRowRename(const size_t planRow)
 
 	if (const auto refusal = renameRefusal(*newName, currentName))
 	{
-		QMessageBox::warning(this, refusal->title, refusal->text);
+		showUserMessage(this, *refusal);
 		return false;
 	}
 

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "fileoperations/entrycreation.h"
 #include "fileoperations/fileoperationtypes.h"
 #include "fileoperations/inlinerename.h"
 #include "fileoperations/newnamecheck.h"
+#include "fileoperations/usermessage.h"
 
 
 // Submodule includes
@@ -49,6 +51,12 @@ enum class PromptOperation
 [[nodiscard]] inline QString newNameRejectionText(NameRejection rejection);
 // Why inlineRename did not rename, for a caller that never replaces: an occupied name is the reason. Empty for Renamed and NothingToDo.
 [[nodiscard]] inline QString inlineRenameFailureText(const InlineRenameResult& result);
+// Why inlineRename did not rename. nullopt when it renamed, had nothing to do, or requires a replacement: the caller asks first.
+[[nodiscard]] inline std::optional<UserMessage> inlineRenameMessage(const InlineRenameResult& result, const QString& oldName, const QString& newName);
+// The question for a ReplacementRequired result, answered yes or no
+[[nodiscard]] inline UserMessage inlineRenameReplacementQuestion(const InlineRenameResult& result, const QString& newName);
+// Why createNewFolder() or createNewFile() created nothing; nullopt when it created the entry. name is the text the user typed.
+[[nodiscard]] inline std::optional<UserMessage> entryCreationMessage(const EntryCreationResult& result, const QString& name);
 // Why makeTransferRequest() or makePermanentDeleteRequest() refused a request, phrased for the user.
 [[nodiscard]] inline QString requestValidationErrorText(RequestValidationError error);
 // The completion text: the counters, then the bounded representative diagnostics
@@ -77,13 +85,8 @@ enum class PromptOperation
 [[nodiscard]] inline QString fileOperationScopeLabel(IssueKind kind);
 [[nodiscard]] inline QString sideComparisonText(SideComparison comparison);
 
-struct RenameRefusal
-{
-	QString title;
-	QString text;
-};
 // Why newName cannot rename an entry named currentName; nullopt when it can.
-[[nodiscard]] inline std::optional<RenameRefusal> renameRefusal(const QString& newName, const QString& currentName);
+[[nodiscard]] inline std::optional<UserMessage> renameRefusal(const QString& newName, const QString& currentName);
 
 QString fileOperationEntryKindNoun(const OperationEntryKind kind)
 {
@@ -248,6 +251,61 @@ QString inlineRenameFailureText(const InlineRenameResult& result)
 		return newNameRejectionText(result.nameRejection);
 	case Failed:
 		return fileSystemErrorText(result.failure->filesystemError);
+	}
+	return {};
+}
+
+std::optional<UserMessage> inlineRenameMessage(const InlineRenameResult& result, const QString& oldName, const QString& newName)
+{
+	using enum InlineRenameStatus;
+	switch (result.status)
+	{
+	case Renamed:
+	case NothingToDo:
+	case ReplacementRequired:
+		return {};
+	case Rejected:
+		return UserMessage{ MessageSeverity::Information, QObject::tr("Item already exists"),
+			QObject::tr("Cannot rename this %1 to \"%2\": a %3 with that name already exists.")
+				.arg(fileOperationEntryKindNoun(*result.sourceKind), newName, fileOperationEntryKindNoun(*result.destinationKind)) };
+	case RejectedInvalidName:
+		return UserMessage{ MessageSeverity::Warning, QObject::tr("Cannot use this name"), newNameRejectionText(result.nameRejection) };
+	case Failed:
+	{
+		QString text = QObject::tr("Failed to rename %1 to %2").arg(oldName, newName);
+		if (result.failure)
+			text.append(":\n" % fileSystemErrorText(result.failure->filesystemError) % '.');
+		return UserMessage{ MessageSeverity::Error, QObject::tr("Renaming failed"), text };
+	}
+	}
+	return {};
+}
+
+UserMessage inlineRenameReplacementQuestion(const InlineRenameResult& result, const QString& newName)
+{
+	assert_debug_only(result.status == InlineRenameStatus::ReplacementRequired);
+	return { MessageSeverity::Warning, QObject::tr("Item already exists"),
+		QObject::tr("The %1 %2 already exists, do you want to overwrite it?").arg(fileOperationEntryKindNoun(*result.destinationKind), newName) };
+}
+
+std::optional<UserMessage> entryCreationMessage(const EntryCreationResult& result, const QString& name)
+{
+	const QString noun = fileOperationEntryKindNoun(result.kind);
+	using enum EntryCreationStatus;
+	switch (result.status)
+	{
+	case Created:
+		return {};
+	case AlreadyExists:
+		return UserMessage{ MessageSeverity::Warning, QObject::tr("Item already exists"), QObject::tr("The %1 %2 already exists.").arg(noun, name) };
+	case RejectedInvalidName:
+		return UserMessage{ MessageSeverity::Warning, QObject::tr("Cannot use this name"), newNameRejectionText(result.nameRejection) };
+	case ParentMissing:
+		return UserMessage{ MessageSeverity::Error, QObject::tr("Failed to create item"),
+			QObject::tr("Cannot create the %1 %2: the folder it was to go in no longer exists.").arg(noun, name) };
+	case Failed:
+		return UserMessage{ MessageSeverity::Error, QObject::tr("Failed to create item"),
+			QObject::tr("Failed to create the %1 %2: %3.").arg(noun, name, fileSystemErrorText(*result.error)) };
 	}
 	return {};
 }
@@ -450,14 +508,14 @@ QString sideComparisonText(const SideComparison comparison)
 	return {};
 }
 
-std::optional<RenameRefusal> renameRefusal(const QString& newName, const QString& currentName)
+std::optional<UserMessage> renameRefusal(const QString& newName, const QString& currentName)
 {
 	if (const NameRejection rejection = checkNewEntryName(newName); rejection != NameRejection::None)
-		return RenameRefusal{ QObject::tr("Cannot use this name"), newNameRejectionText(rejection) };
+		return UserMessage{ MessageSeverity::Warning, QObject::tr("Cannot use this name"), newNameRejectionText(rejection) };
 
 	// An unchanged name is not a rename; an exact-case respell of the same name is, hence the case-sensitive compare.
 	if (newName == currentName)
-		return RenameRefusal{ QObject::tr("Nothing to rename"), QObject::tr("This is already the entry's name. Enter a different one to rename it.") };
+		return UserMessage{ MessageSeverity::Warning, QObject::tr("Nothing to rename"), QObject::tr("This is already the entry's name. Enter a different one to rename it.") };
 
 	return {};
 }

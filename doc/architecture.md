@@ -74,6 +74,7 @@ Known defects:
 
 Inline rename is a separate synchronous command that reuses name, inspection, identity, and native rename
 primitives. Batch rename (`batchrename`) applies inline rename per item and never replaces an existing entry.
+Entry creation (`entrycreation.h`) is the same kind of command for a new folder chain or an empty file.
 Test-only fault injection lives in `operationtesthooks` and compiles out of production builds.
 
 ## Paths
@@ -120,7 +121,8 @@ or copies its full path.
 issues" scope where permitted, and a rename row when renaming is offered.
 
 What any front end presents the same way lives in the engine, so a host without widgets uses it too: the wording, from
-request validation errors to the progress line and the completion summary, in the header-only `fileoperationtexts.h`;
+request validation errors to the progress line and the completion summary, in the header-only `fileoperationtexts.h`,
+with complete messages as `UserMessage` (`usermessagebox.h` shows one in a message box);
 the rules (the Enter action of a prompt, whether the scope is offered, the plan-wide answers, the progress
 percentages) beside the policy table in `fileoperationtypes.h`.
 

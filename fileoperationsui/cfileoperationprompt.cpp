@@ -1,4 +1,5 @@
 #include "cfileoperationprompt.h"
+#include "usermessagebox.h"
 
 #include "fileoperations/fileoperationtexts.h"
 
@@ -13,7 +14,6 @@ DISABLE_COMPILER_WARNINGS
 #include <QDir>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 RESTORE_COMPILER_WARNINGS
 
@@ -88,7 +88,7 @@ bool CFileOperationPrompt::renameNameAccepted()
 {
 	const auto refusal = renameRefusal(ui->renameEdit->text(), _request.issue.source.path.name());
 	if (refusal)
-		QMessageBox::warning(this, refusal->title, refusal->text);
+		showUserMessage(this, *refusal);
 	return !refusal;
 }
 

@@ -32,7 +32,8 @@ SOURCES += \
 	hostilenametests.cpp \
 	fileoperationjobtests.cpp \
 	inlinerenametests.cpp \
-	batchrenametests.cpp
+	batchrenametests.cpp \
+	entrycreationtests.cpp
 
 HEADERS += \
 	fileoperationtesthelpers.h \
