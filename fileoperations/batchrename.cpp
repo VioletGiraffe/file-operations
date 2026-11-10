@@ -96,12 +96,6 @@ namespace {
 	return result;
 }
 
-// The destination exists: either a file inlineRename would only replace on confirmation, or an entry it never replaces
-[[nodiscard]] bool isNameTaken(const InlineRenameResult& result)
-{
-	return result.status == InlineRenameStatus::ReplacementRequired || result.status == InlineRenameStatus::Rejected;
-}
-
 } // namespace
 
 CBatchRenamePattern::CBatchRenamePattern(BatchRenameRules rules) :
@@ -160,8 +154,9 @@ std::vector<std::optional<InlineRenameResult>> batchRename(const std::vector<Bat
 					return results;
 
 				const BatchRenameItem& current = items[item];
-				const InlineRenameResult& result = results[item].emplace(inlineRename(current.source, current.newName, false));
-				if (isNameTaken(result))
+				// Rejected: the new name is taken
+				const InlineRenameResult& result = results[item].emplace(inlineRename(current.source, current.newName, InlineRenameReplacement::Never));
+				if (result.status == InlineRenameStatus::Rejected)
 				{
 					waitingForName.insert(current.source.parent().child(current.newName).value(), item);
 					break;
@@ -181,7 +176,7 @@ std::vector<std::optional<InlineRenameResult>> batchRename(const std::vector<Bat
 			}
 		}
 
-		std::erase_if(pending, [&results](const size_t item) { return !isNameTaken(*results[item]); });
+		std::erase_if(pending, [&results](const size_t item) { return results[item]->status != InlineRenameStatus::Rejected; });
 	}
 
 	return results;

@@ -41,14 +41,14 @@ TEST_CASE("inline rename: no-op and straight rename", "[inlinerename]")
 
 	SECTION("the same spelling is nothing to do")
 	{
-		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("file.bin"), false);
+		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("file.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::NothingToDo);
 		CHECK(!entryAbsent(base % "/file.bin"));
 	}
 
 	SECTION("a file renamed to an absent name is renamed")
 	{
-		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("renamed.bin"), false);
+		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("renamed.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Renamed);
 		CHECK(entryAbsent(base % "/file.bin"));
 		CHECK(readFileContents(base % "/renamed.bin") == patternedContents(400));
@@ -60,20 +60,20 @@ TEST_CASE("inline rename: no-op and straight rename", "[inlinerename]")
 		for (const QString& bad : { QString{}, QStringLiteral("a/b.bin"), QStringLiteral(".."), QStringLiteral("."), QStringLiteral("   ") })
 		{
 			INFO("name: '" << bad.toStdString() << "'");
-			CHECK(inlineRename(ep(base % "/file.bin"), bad, false).status == InlineRenameStatus::RejectedInvalidName);
+			CHECK(inlineRename(ep(base % "/file.bin"), bad, InlineRenameReplacement::Ask).status == InlineRenameStatus::RejectedInvalidName);
 		}
 		// The reason travels with the rejection, so the caller can say which rule the name broke.
-		CHECK(inlineRename(ep(base % "/file.bin"), QStringLiteral("   "), false).nameRejection == NameRejection::WhitespaceOnly);
+		CHECK(inlineRename(ep(base % "/file.bin"), QStringLiteral("   "), InlineRenameReplacement::Ask).nameRejection == NameRejection::WhitespaceOnly);
 
 		QString nameWithNull = QStringLiteral("victim");
 		nameWithNull += QChar{ 0 };
 		nameWithNull += QStringLiteral("suffix");
-		const auto nulResult = inlineRename(ep(base % "/file.bin"), nameWithNull, false);
+		const auto nulResult = inlineRename(ep(base % "/file.bin"), nameWithNull, InlineRenameReplacement::Ask);
 		CHECK(nulResult.status == InlineRenameStatus::RejectedInvalidName);
 		CHECK(nulResult.nameRejection == NameRejection::InvalidCharacter);
 
 #ifdef _WIN32
-		const auto reservedResult = inlineRename(ep(base % "/file.bin"), QStringLiteral("NUL.txt"), false);
+		const auto reservedResult = inlineRename(ep(base % "/file.bin"), QStringLiteral("NUL.txt"), InlineRenameReplacement::Ask);
 		CHECK(reservedResult.status == InlineRenameStatus::RejectedInvalidName);
 		CHECK(reservedResult.nameRejection == NameRejection::ReservedDeviceName);
 #endif
@@ -89,7 +89,7 @@ TEST_CASE("inline rename: a case-only change is performed", "[inlinerename][case
 	const QString base = tempDir.path();
 	writeTestFile(base % "/file.bin", patternedContents(120));
 
-	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("FILE.BIN"), false);
+	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("FILE.BIN"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::Renamed);
 
 	// The entry now carries the new-case spelling, whichever way the filesystem stores case.
@@ -111,7 +111,7 @@ TEST_CASE("inline rename: renaming onto a hardlink alias of the file is nothing 
 	REQUIRE(createHardLink(base % "/file.bin", base % "/alias.bin"));
 
 	// The destination is a genuinely different name for the same inode (not a case respell): already satisfied.
-	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("alias.bin"), false);
+	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("alias.bin"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::NothingToDo);
 	CHECK(!entryAbsent(base % "/file.bin"));
 	CHECK(!entryAbsent(base % "/alias.bin"));
@@ -136,7 +136,7 @@ TEST_CASE("inline rename: a case-equivalent hardlink alias is not mistaken for a
 
 	REQUIRE(createHardLink(base % "/file.bin", base % "/FILE.BIN"));
 
-	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("FILE.BIN"), false);
+	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("FILE.BIN"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::NothingToDo);
 	CHECK(!entryAbsent(base % "/file.bin"));
 	CHECK(!entryAbsent(base % "/FILE.BIN"));
@@ -154,7 +154,7 @@ TEST_CASE("inline rename: a file-like collision needs confirmation, then replace
 
 	SECTION("without confirmation, the destination is preserved")
 	{
-		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), false);
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::ReplacementRequired);
 		CHECK(result.sourceKind == OperationEntryKind::RegularFile);
 		CHECK(result.destinationKind == OperationEntryKind::RegularFile);
@@ -162,9 +162,19 @@ TEST_CASE("inline rename: a file-like collision needs confirmation, then replace
 		CHECK(!entryAbsent(base % "/src.bin"));
 	}
 
+	SECTION("a caller that never replaces gets a rejection, and the destination is preserved")
+	{
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Never);
+		CHECK(result.status == InlineRenameStatus::Rejected);
+		CHECK(result.sourceKind == OperationEntryKind::RegularFile);
+		CHECK(result.destinationKind == OperationEntryKind::RegularFile);
+		CHECK(readFileContents(base % "/dst.bin") == patternedContents(50));
+		CHECK(!entryAbsent(base % "/src.bin"));
+	}
+
 	SECTION("with confirmation, it is one atomic replacement")
 	{
-		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), true);
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Replace);
 		CHECK(result.status == InlineRenameStatus::Renamed);
 		CHECK(entryAbsent(base % "/src.bin"));
 		CHECK(readFileContents(base % "/dst.bin") == patternedContents(700));
@@ -182,7 +192,7 @@ TEST_CASE("inline rename: type mismatches and directory collisions are rejected"
 
 	SECTION("a file cannot replace a real directory")
 	{
-		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("folder"), false);
+		const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("folder"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Rejected);
 		CHECK(result.sourceKind == OperationEntryKind::RegularFile);
 		CHECK(result.destinationKind == OperationEntryKind::Directory);
@@ -191,7 +201,7 @@ TEST_CASE("inline rename: type mismatches and directory collisions are rejected"
 
 	SECTION("a directory never replaces an occupied file")
 	{
-		const auto result = inlineRename(ep(base % "/folder"), QStringLiteral("file.bin"), false);
+		const auto result = inlineRename(ep(base % "/folder"), QStringLiteral("file.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Rejected);
 		CHECK(result.sourceKind == OperationEntryKind::Directory);
 		CHECK(result.destinationKind == OperationEntryKind::RegularFile);
@@ -199,7 +209,7 @@ TEST_CASE("inline rename: type mismatches and directory collisions are rejected"
 
 	SECTION("a directory never merges into an occupied directory")
 	{
-		const auto result = inlineRename(ep(base % "/folder"), QStringLiteral("otherFolder"), false);
+		const auto result = inlineRename(ep(base % "/folder"), QStringLiteral("otherFolder"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Rejected);
 	}
 }
@@ -218,7 +228,7 @@ TEST_CASE("inline rename: a directory-link destination is rejected like a folder
 	REQUIRE(createDirectoryLink(base % "/realTarget", base % "/aLink"));
 
 	// Inline rename cannot atomically replace a directory link (Windows refuses it), so it is rejected.
-	const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("aLink"), false);
+	const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("aLink"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::Rejected);
 	CHECK(result.destinationKind == OperationEntryKind::DirectoryLink);
 	CHECK(!entryAbsent(base % "/src.bin"));
@@ -237,7 +247,7 @@ TEST_CASE("inline rename: a directory-like source rejects an occupied destinatio
 	REQUIRE(createDirectoryLink(base % "/realTarget", base % "/dirLink"));
 	writeTestFile(base % "/occupied.bin", patternedContents(30));
 
-	const auto result = inlineRename(ep(base % "/dirLink"), QStringLiteral("occupied.bin"), false);
+	const auto result = inlineRename(ep(base % "/dirLink"), QStringLiteral("occupied.bin"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::Rejected);
 	CHECK(result.sourceKind == OperationEntryKind::DirectoryLink);
 }
@@ -255,7 +265,7 @@ TEST_CASE("inline rename: a directory link renames to an absent name as the link
 
 	REQUIRE(createDirectoryLink(base % "/realTarget", base % "/aLink"));
 
-	const auto result = inlineRename(ep(base % "/aLink"), QStringLiteral("renamedLink"), false);
+	const auto result = inlineRename(ep(base % "/aLink"), QStringLiteral("renamedLink"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::Renamed);
 	CHECK(entryAbsent(base % "/aLink"));
 
@@ -277,7 +287,7 @@ TEST_CASE("inline rename: inspection failures surface structured errors", "[inli
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::InspectEntry_Native, ioFailureCode);
 
-		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), false);
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Failed);
 		REQUIRE(result.failure.has_value());
 		CHECK(result.failure->action == FailedAction::InspectDestination);
@@ -291,7 +301,7 @@ TEST_CASE("inline rename: inspection failures surface structured errors", "[inli
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::InspectEntry_Native, ioFailureCode, 1, 1);
 
-		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), false);
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Failed);
 		REQUIRE(result.failure.has_value());
 		CHECK(result.failure->action == FailedAction::InspectSource);
@@ -302,7 +312,7 @@ TEST_CASE("inline rename: inspection failures surface structured errors", "[inli
 	{
 		REQUIRE(QFile::remove(base % "/src.bin"));
 
-		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), false);
+		const auto result = inlineRename(ep(base % "/src.bin"), QStringLiteral("dst.bin"), InlineRenameReplacement::Ask);
 		CHECK(result.status == InlineRenameStatus::Failed);
 		REQUIRE(result.failure.has_value());
 		CHECK(result.failure->action == FailedAction::InspectSource);
@@ -320,7 +330,7 @@ TEST_CASE("inline rename: a native failure surfaces a structured error", "[inlin
 	CFaultHookScope hooks;
 	hooks.forceNativeError(Point::RenameEntry_Native, ioFailureCode);
 
-	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("renamed.bin"), false);
+	const auto result = inlineRename(ep(base % "/file.bin"), QStringLiteral("renamed.bin"), InlineRenameReplacement::Ask);
 	CHECK(result.status == InlineRenameStatus::Failed);
 	REQUIRE(result.failure.has_value());
 	CHECK(result.failure->action == FailedAction::RenameEntry);

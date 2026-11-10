@@ -184,7 +184,7 @@ TEST_CASE("batch rename: never replaces an existing entry", "[batchrename]")
 
 	REQUIRE(results.size() == 3);
 	CHECK(statusOf(results[0]) == InlineRenameStatus::Renamed);
-	CHECK(statusOf(results[1]) == InlineRenameStatus::ReplacementRequired);
+	CHECK(statusOf(results[1]) == InlineRenameStatus::Rejected);
 	CHECK(statusOf(results[2]) == InlineRenameStatus::Rejected);
 
 	CHECK(readFileContents(base % "/renamed.txt") == "a");
@@ -229,8 +229,8 @@ TEST_CASE("batch rename: a chain completes in any order, a cycle stays as it is"
 			{ ep(base % "/2"), QStringLiteral("1") },
 		}, always);
 
-		CHECK(statusOf(results[0]) == InlineRenameStatus::ReplacementRequired);
-		CHECK(statusOf(results[1]) == InlineRenameStatus::ReplacementRequired);
+		CHECK(statusOf(results[0]) == InlineRenameStatus::Rejected);
+		CHECK(statusOf(results[1]) == InlineRenameStatus::Rejected);
 		CHECK(readFileContents(base % "/1") == "1");
 		CHECK(readFileContents(base % "/2") == "2");
 	}

@@ -49,7 +49,7 @@ enum class PromptOperation
 [[nodiscard]] inline QString fileOperationDiagnosticText(const OperationDiagnostic& diagnostic);
 // Why a proposed name was refused, phrased for the user. Empty for NameRejection::None.
 [[nodiscard]] inline QString newNameRejectionText(NameRejection rejection);
-// Why inlineRename did not rename, for a caller that never replaces: an occupied name is the reason. Empty for Renamed and NothingToDo.
+// Why inlineRename did not rename, as a phrase for a longer message. Empty for Renamed and NothingToDo.
 [[nodiscard]] inline QString inlineRenameFailureText(const InlineRenameResult& result);
 // Why inlineRename did not rename. nullopt when it renamed, had nothing to do, or requires a replacement: the caller asks first.
 [[nodiscard]] inline std::optional<UserMessage> inlineRenameMessage(const InlineRenameResult& result, const QString& oldName, const QString& newName);

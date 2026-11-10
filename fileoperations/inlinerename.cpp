@@ -46,7 +46,7 @@ InlineRenameResult performCaseRespellOrRecognizeAlias(const CEntryPath& source, 
 
 } // namespace
 
-InlineRenameResult inlineRename(const CEntryPath& source, const QString& newName, const bool replaceExistingFile)
+InlineRenameResult inlineRename(const CEntryPath& source, const QString& newName, const InlineRenameReplacement fileReplacement)
 {
 	using enum InlineRenameStatus;
 	assert_debug_only(!source.isRoot());
@@ -102,10 +102,16 @@ InlineRenameResult inlineRename(const CEntryPath& source, const QString& newName
 	if (isDirectoryLike(sourceKind) || isDirectoryLike(destinationKind))
 		return { .status = Rejected, .sourceKind = sourceKind, .destinationKind = destinationKind };
 
-	// File-like -> file-like (a regular file, a file link, or an other-entry): an atomic replacement, but
-	// only after the caller confirms it.
-	if (!replaceExistingFile)
+	// File-like -> file-like (a regular file, a file link, or an other-entry): an atomic replacement where the caller allows it
+	switch (fileReplacement)
+	{
+	case InlineRenameReplacement::Ask:
 		return { .status = ReplacementRequired, .sourceKind = sourceKind, .destinationKind = destinationKind };
+	case InlineRenameReplacement::Never:
+		return { .status = Rejected, .sourceKind = sourceKind, .destinationKind = destinationKind };
+	case InlineRenameReplacement::Replace:
+		break;
+	}
 
 	return performRename(source, destination, ReplacementMode::ReplaceExistingFile);
 }
