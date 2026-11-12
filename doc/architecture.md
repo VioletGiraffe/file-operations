@@ -130,7 +130,8 @@ percentages) beside the policy table in `fileoperationtypes.h`.
 
 `scanDirectory()` walks a tree depth-first and reports every entry below the root, never the root itself, as the
 containing folder's path plus thin_io's `directory_entry`. It can follow directory links and breaks cycles with resolved
-native identity, not path text. The engine builds its manifests with a traversal of its own.
+native identity, not path text. A caller's predicate can exclude directories, which are then neither reported nor
+descended into. The engine builds its manifests with a traversal of its own.
 
 `thinioqstring` wraps the thin_io calls the scanner makes in `QString`-path form; hosts use it too. The path and name
 conversions themselves are thin_io's `qt_paths.hpp`.

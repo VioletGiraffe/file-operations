@@ -22,6 +22,7 @@ namespace {
 struct Scan {
 	const std::function<void (const QString&, const thin_io::directory_entry&, bool)>& observer;
 	const std::atomic<bool>& abort;
+	const std::function<bool (const thin_io::directory_entry&)>& isDirectoryExcluded;
 	const bool followDirLinks;
 	std::vector<QString> dirsBeingScanned;
 };
@@ -62,10 +63,14 @@ void scanContents(const QString& dirPath, const bool reachedThroughLink, Scan& s
 		if (scan.abort)
 			break;
 
+		const bool isDirectory = followedStatus(entry).attributes.kind == thin_io::entry_kind::directory;
+		if (isDirectory && scan.isDirectoryExcluded && scan.isDirectoryExcluded(entry))
+			continue;
+
 		if (scan.observer)
 			scan.observer(dirPath, entry, reachedThroughLink);
 
-		if (followedStatus(entry).attributes.kind != thin_io::entry_kind::directory)
+		if (!isDirectory)
 			continue;
 
 		const QString childPath = dirPath % thin_io::to_qstring(entry.name) % '/';
@@ -83,6 +88,7 @@ void scanContents(const QString& dirPath, const bool reachedThroughLink, Scan& s
 void scanDirectory(const QString& rootPath,
 	const std::function<void (const QString&, const thin_io::directory_entry&, bool)>& observer,
 	const std::atomic<bool>& abort,
+	const std::function<bool (const thin_io::directory_entry&)>& isDirectoryExcluded,
 	const bool followDirLinks)
 {
 	const QString dirPath = rootPath.endsWith('/') ? rootPath : QString{ rootPath % '/' };
@@ -91,7 +97,7 @@ void scanDirectory(const QString& rootPath,
 	if (!rootEntry || followedStatus(*rootEntry).attributes.kind != thin_io::entry_kind::directory)
 		return;
 
-	Scan scan{ observer, abort, followDirLinks, {} };
+	Scan scan{ observer, abort, isDirectoryExcluded, followDirLinks, {} };
 	const bool rootIsLink = rootEntry->attributes.is_link;
 	if (rootIsLink && !mayTraverseLink(dirPath, scan))
 		return;

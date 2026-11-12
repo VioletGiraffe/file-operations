@@ -36,7 +36,8 @@ directory scanning and folder comparison.
 
 **Scanning and comparison** (`directoryscan/`, `foldercomparison/`)
 
-- `scanDirectory()`: recursive, abortable traversal that follows directory links and detects link cycles.
+- `scanDirectory()`: recursive, abortable traversal that follows directory links, detects link cycles, and can skip
+  directories a caller excludes.
 - `compareFolders()`: compares two folder trees, matching names exactly or across letter case and Unicode
   normalization, and reading file contents only where type and size cannot already tell files apart. Reports progress
   and can be aborted.
