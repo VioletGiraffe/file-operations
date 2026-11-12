@@ -142,3 +142,14 @@ conversions themselves are thin_io's `qt_paths.hpp`.
 normalization), and reads file contents only where type and size cannot already tell a pair apart. Directory links are
 followed, so a link is judged by the contents a transfer would copy. `compareFileContents()` is the byte comparison
 underneath.
+
+## Shell operations (`shelloperations/`)
+
+The shell's own file operations block until the user dismisses their progress and prompt UI, so their duration is
+unbounded. `CShellOperationRunner` gives each one a thread of its own; a fixed-size pool would let one stall the rest.
+
+- The runner's list of threads is touched only on the thread that owns the runner: `run()`, the wait, and the queued
+  removal of a finished entry.
+- The wait at shutdown dispatches events, never joins: the shell routes clipboard calls, and messages to its dialogs'
+  owner window, through the thread that owns the runner.
+- An owner window passed to an operation must outlive it; a host that cannot guarantee that passes none.

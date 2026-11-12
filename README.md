@@ -1,7 +1,7 @@
 # file-operations
 
 File operations for Qt applications: a copy / move / permanent-delete engine, its progress and decision dialogs,
-directory scanning and folder comparison.
+directory scanning, folder comparison, and the platform shell's own file operations.
 
 ## Capabilities
 
@@ -25,7 +25,7 @@ directory scanning and folder comparison.
 - Requests are built from raw path text (`makeTransferRequest`, `makePermanentDeleteRequest`), validated once.
 - Inline rename of a single entry; batch rename by name rules (masks, counter, find and replace) that never replaces an
   existing entry; validation of a name a user proposes for a new or renamed entry.
-- Not included: moving to the Trash / Recycle Bin (delete is permanent), and clipboard integration.
+- The engine's delete is permanent; the engine never moves to the Trash / Recycle Bin or reads the clipboard.
 
 **Dialogs** (`fileoperationsui/`)
 
@@ -43,6 +43,12 @@ directory scanning and folder comparison.
   and can be aborted.
 - `compareFileContents()`: byte comparison of two files.
 
+**Shell operations** (`shelloperations/`)
+
+- On Windows, pasting the clipboard into a folder with the shell's own Paste command. It also accepts virtual files:
+  files the clipboard holds only as contents, with no path.
+- `CShellOperationRunner` runs such blocking shell calls on threads of their own, and waits for them at shutdown.
+
 ## Layout
 
 | Folder | Contents | Library |
@@ -52,6 +58,7 @@ directory scanning and folder comparison.
 | `directoryscan/` | `scanDirectory()` and `QString`-path access to thin_io. | `fileoperations` |
 | `foldercomparison/` | `compareFolders()`, `compareFileContents()`. Needs `directoryscan`. | `fileoperations` |
 | `paths/` | Path text grammar: absolute roots, lexical normalization. | `fileoperations` |
+| `shelloperations/` | `CShellOperationRunner`, and the shell's own file operations. | `fileoperations` |
 | `libraries/` | The library projects, and the `.pri` files a host includes to link them. | |
 | `test-utils/` | Test fixtures: folder generation, random data, link creation. | `test_utils` |
 | `tests/` | The suites; `tests.pro` builds them with their dependencies. | |

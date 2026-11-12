@@ -11,7 +11,7 @@ test tree.
 
 | Executable | Component |
 |------------|-----------|
-| `fileoperations_test` | The engine: copy, move, delete, staged copy, destination and name resolution, cross-volume, hostile names |
+| `fileoperations_test` | The engine: copy, move, delete, staged copy, destination and name resolution, cross-volume, hostile names; the shell operation runner |
 | `foldercomparison_test` | File content and folder comparison |
 | `fileoperationsui_test` | The dialog and the decision prompt |
 
