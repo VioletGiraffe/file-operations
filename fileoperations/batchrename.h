@@ -42,6 +42,8 @@ struct BatchRenameRules
 	int counterStart = 1;
 	int counterStep = 1;
 	int counterDigits = 1; // Zero-padded to this width
+
+	[[nodiscard]] bool operator==(const BatchRenameRules&) const = default;
 };
 
 struct BatchRenameSource
