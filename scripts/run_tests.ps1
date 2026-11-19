@@ -32,7 +32,7 @@ param(
 # files and gigabytes of data; CI runs them separately with fresh seeds. -All clears the filters.
 $suites = [ordered]@{
 	'fileoperations_test'   = @('~[executor]~[deleteexecutor]')
-	'foldercomparison_test' = @('~[CFileComparator]')
+	'foldercomparison_test' = @('~[randomdata]')
 	'fileoperationsui_test' = @()
 }
 

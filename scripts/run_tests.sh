@@ -38,10 +38,10 @@ fi
 # Skipped by default: these generate trees of thousands of files and gigabytes of data, and CI runs them
 # repeatedly with fresh seeds. Every other case in both suites still runs.
 FILEOPERATIONS_ARGS="~[executor]~[deleteexecutor]"
-FILECOMPARATOR_ARGS="~[CFileComparator]"
+CONTENTCOMPARISON_ARGS="~[randomdata]"
 if [ "${1:-}" = all ]; then
 	FILEOPERATIONS_ARGS=""
-	FILECOMPARATOR_ARGS=""
+	CONTENTCOMPARISON_ARGS=""
 	shift
 fi
 
@@ -102,7 +102,7 @@ for test in ${TESTS}; do
 	default_args=""
 	case "${test}" in
 		fileoperations_test) default_args="${FILEOPERATIONS_ARGS}" ;;
-		foldercomparison_test) default_args="${FILECOMPARATOR_ARGS}" ;;
+		foldercomparison_test) default_args="${CONTENTCOMPARISON_ARGS}" ;;
 	esac
 
 	echo

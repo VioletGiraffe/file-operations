@@ -38,7 +38,7 @@ The scripts take the Qt kit from `QT_ROOT_DIR`, or from a git-ignored `local-env
 the shell script also falls back to a `qmake` already on PATH.
 
 Without `all`, the tests that work on generated data are excluded: `[executor]` and `[deleteexecutor]` in
-`fileoperations_test`, which build trees of thousands of files, and `[CFileComparator]` in `foldercomparison_test`,
+`fileoperations_test`, which build trees of thousands of files, and `[randomdata]` in `foldercomparison_test`,
 which writes about a thousand files of up to 3 MB each. Every other case in both suites still runs.
 
 To run on FAT32 or exFAT, point `TEMP` and `TMP` at the volume: every test works in a `QTemporaryDir`. Tests that need
