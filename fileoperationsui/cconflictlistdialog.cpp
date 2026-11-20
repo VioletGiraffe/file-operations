@@ -1,4 +1,5 @@
 #include "cconflictlistdialog.h"
+#include "decisionbutton.h"
 #include "usermessagebox.h"
 
 
@@ -37,23 +38,6 @@ namespace
 
 // Presentation order of the action buttons; only the actions some row of the plan allows get a button.
 constexpr std::array plannableActionOrder{ DecisionAction::Replace, DecisionAction::Merge, DecisionAction::MakeWritable, DecisionAction::Rename, DecisionAction::Skip };
-
-QString buttonName(const DecisionAction action)
-{
-	using enum DecisionAction;
-	switch (action)
-	{
-	case Skip: return QStringLiteral("btnSkip");
-	case Replace: return QStringLiteral("btnReplace");
-	case Merge: return QStringLiteral("btnMerge");
-	case MakeWritable: return QStringLiteral("btnMakeWritable");
-	case Rename: return QStringLiteral("btnRename");
-	case Retry: return QStringLiteral("btnRetry");
-	case Cancel: return QStringLiteral("btnCancel");
-	case CopyLinkTargets: return QStringLiteral("btnCopyLinkTargets");
-	}
-	return {};
-}
 
 bool actionAllowed(const IssueKind kind, const DecisionAction action)
 {
@@ -198,9 +182,7 @@ void CConflictListDialog::createActionButtons()
 		if (!anyPlanRow([this, action](const size_t planRow) { return actionAllowed(_model.conflict(planRow).issue.kind, action); }))
 			continue;
 
-		auto* button = new QPushButton{ fileOperationActionLabel(action, _operation), this };
-		button->setObjectName(buttonName(action));
-		button->setAutoDefault(false);
+		auto* button = createDecisionButton(action, _operation, this);
 		connect(button, &QPushButton::clicked, this, [this, action] {
 			if (action == DecisionAction::Rename)
 				renameSelectedRow();

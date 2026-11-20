@@ -1,4 +1,5 @@
 #include "cfileoperationprompt.h"
+#include "decisionbutton.h"
 #include "usermessagebox.h"
 
 #include "fileoperations/fileoperationtexts.h"
@@ -19,28 +20,6 @@ RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
 #include <optional>
-
-namespace
-{
-
-QString buttonName(const DecisionAction action)
-{
-	using enum DecisionAction;
-	switch (action)
-	{
-	case Skip: return QStringLiteral("btnSkip");
-	case Replace: return QStringLiteral("btnReplace");
-	case Merge: return QStringLiteral("btnMerge");
-	case MakeWritable: return QStringLiteral("btnMakeWritable");
-	case Rename: return QStringLiteral("btnRename");
-	case Retry: return QStringLiteral("btnRetry");
-	case Cancel: return QStringLiteral("btnCancel");
-	case CopyLinkTargets: return QStringLiteral("btnCopyLinkTargets");
-	}
-	return {};
-}
-
-} // namespace
 
 CFileOperationPrompt::CFileOperationPrompt(const DecisionRequest& request, const PromptOperation operation, QWidget* parent) :
 	QDialog{ parent },
@@ -110,9 +89,7 @@ void CFileOperationPrompt::createActionButtons()
 	const std::optional<DecisionAction> defaultAction = defaultActionFor(_request.issue.kind);
 	for (const DecisionAction action : _request.allowedActions)
 	{
-		auto* button = new QPushButton{ fileOperationActionLabel(action, _operation), this };
-		button->setObjectName(buttonName(action));
-		button->setAutoDefault(false); // Enter does nothing in a prompt without a default action
+		auto* button = createDecisionButton(action, _operation, this);
 		button->setDefault(defaultAction && action == *defaultAction);
 		connect(button, &QPushButton::clicked, this, [this, action] { onActionChosen(action); });
 		ui->buttonsLayout->addWidget(button);
@@ -136,7 +113,7 @@ void CFileOperationPrompt::setInitialFocus()
 		return;
 	}
 
-	auto* skipButton = findChild<QPushButton*>(buttonName(DecisionAction::Skip));
+	auto* skipButton = findChild<QPushButton*>(decisionButtonName(DecisionAction::Skip));
 	skipButton->setFocus(); // Every issue kind offers Skip
 }
 

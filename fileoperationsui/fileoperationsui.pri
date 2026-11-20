@@ -5,6 +5,7 @@ HEADERS += \
 	$$PWD/cconflictlistmodel.h \
 	$$PWD/cfileoperationdialog.h \
 	$$PWD/cfileoperationprompt.h \
+	$$PWD/decisionbutton.h \
 	$$PWD/usermessagebox.h
 
 SOURCES += \
