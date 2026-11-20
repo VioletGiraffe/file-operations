@@ -1377,3 +1377,54 @@ TEST_CASE("createDirectories: forced faults at the final creation", "[mutator]")
 		CHECK(result.error().category == FileErrorCategory::PermissionDenied);
 	}
 }
+
+TEST_CASE("createLink: a failure that proves no such link can be created here is Unsupported", "[mutator][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const CEntryPath linkPath = ep(tempDir.path() % "/link");
+	const thin_io::link_definition definition{ .type = thin_io::link_type::symbolic_link, .target = {} };
+
+#ifdef _WIN32
+	const NativeErrorCode noPrivilegeCode = ERROR_PRIVILEGE_NOT_HELD;
+#else
+	const NativeErrorCode noPrivilegeCode = EPERM; // symlink(2): the filesystem holds no symbolic links
+#endif
+
+	SECTION("the privilege, or the filesystem's support for symbolic links")
+	{
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::CreateLink_Native, noPrivilegeCode);
+		const auto unsupported = CFileSystemMutator::createLink(linkPath, definition);
+		REQUIRE(!unsupported.has_value());
+		CHECK(unsupported.error().category == FileErrorCategory::Unsupported);
+		CHECK(unsupported.error().nativeCode == noPrivilegeCode);
+	}
+
+	SECTION("a filesystem without links")
+	{
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::CreateLink_Native, linksUnsupportedCode);
+		const auto noLinks = CFileSystemMutator::createLink(linkPath, definition);
+		REQUIRE(!noLinks.has_value());
+		CHECK(noLinks.error().category == FileErrorCategory::Unsupported);
+	}
+}
+
+TEST_CASE("createLink: any other failure keeps its own category", "[mutator][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+
+#ifdef _WIN32
+	const NativeErrorCode ioFailureCode = ERROR_GEN_FAILURE;
+#else
+	const NativeErrorCode ioFailureCode = EIO;
+#endif
+
+	CFaultHookScope hooks;
+	hooks.forceNativeError(Point::CreateLink_Native, ioFailureCode);
+	const auto failed = CFileSystemMutator::createLink(ep(tempDir.path() % "/link"), thin_io::link_definition{ .target = {} });
+	REQUIRE(!failed.has_value());
+	CHECK(failed.error().category == FileErrorCategory::IoFailure);
+}

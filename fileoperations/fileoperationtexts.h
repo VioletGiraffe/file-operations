@@ -116,6 +116,9 @@ QString fileOperationIssueText(const OperationIssue& issue, const PromptOperatio
 	case RootDirectoryMerge:
 		return QObject::tr("The destination folder already exists. Merge the source folder's contents into it?");
 	case TypeMismatch:
+		// Same kinds: a Windows link to a folder, which can neither replace nor be replaced
+		if (issue.source.kind == destinationKind)
+			return QObject::tr("The destination %1 already exists and cannot be replaced by another one.").arg(fileOperationEntryKindNoun(destinationKind));
 		return QObject::tr("The source is a %1, but the existing destination is a %2. An entry cannot replace an entry of a different type.")
 			.arg(fileOperationEntryKindNoun(issue.source.kind), fileOperationEntryKindNoun(destinationKind));
 	case ActionFailed:
@@ -127,6 +130,8 @@ QString fileOperationIssueText(const OperationIssue& issue, const PromptOperatio
 	case UnsupportedEntry:
 		return QObject::tr("This entry is not a file or a folder (a device, pipe, or socket) and cannot be %1.")
 			.arg(operation == PromptOperation::Move ? QObject::tr("moved") : QObject::tr("copied"));
+	case LinksUnsupported:
+		return QObject::tr("Links cannot be created at the destination. Copy what they point to instead, or skip them?");
 	}
 
 	return {};
@@ -143,6 +148,7 @@ QString fileOperationIssueKindText(const IssueKind kind)
 	case ActionFailed: return QObject::tr("Failed");
 	case ReadOnlySourceRemoval: return QObject::tr("Read-only source");
 	case UnsupportedEntry: return QObject::tr("Unsupported entry");
+	case LinksUnsupported: return QObject::tr("Links unsupported");
 	}
 	return {};
 }
@@ -160,6 +166,7 @@ QString fileOperationActionLabel(const DecisionAction action, const PromptOperat
 	case Rename: return QObject::tr("Rename");
 	case Retry: return QObject::tr("Retry");
 	case Cancel: return QObject::tr("Cancel");
+	case CopyLinkTargets: return QObject::tr("Copy what they point to");
 	}
 	return {};
 }
@@ -183,6 +190,9 @@ QString fileOperationFailedActionText(const FailedAction action)
 	case RemovePublishedMoveSource: return QObject::tr("Removing the moved entry's source");
 	case CleanupStaging: return QObject::tr("Removing the temporary destination file");
 	case PreserveDirectoryTimestamps: return QObject::tr("Preserving the folder's timestamps");
+	case ReadLink: return QObject::tr("Reading the link");
+	case CreateLink: return QObject::tr("Creating the link");
+	case PreserveLinkMetadata: return QObject::tr("Preserving the link's attributes");
 	}
 	return {};
 }
@@ -490,6 +500,7 @@ QString fileOperationScopeLabel(const IssueKind kind)
 	case ActionFailed: return QObject::tr("Apply to any further failures, not only this one");
 	case ReadOnlySourceRemoval: return QObject::tr("Apply to all remaining read-only items");
 	case UnsupportedEntry: return QObject::tr("Apply to all remaining unsupported entries");
+	case LinksUnsupported: return {}; // Never offered: one answer covers every link
 	}
 	return {};
 }

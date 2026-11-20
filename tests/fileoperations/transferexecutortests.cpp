@@ -2,6 +2,7 @@
 // context policy, outcome aggregation, accounting, timestamps, and progress.
 
 #include "fileoperations/coperationexecutioncontext.h"
+#include "fileoperations/fileoperationtexts.h"
 #include "fileoperations/operationtesthooks.h"
 
 #include "fileoperationtesthelpers.h"
@@ -970,7 +971,270 @@ TEST_CASE("copy executor: a directory raced into a Replace destination re-enters
 }
 #endif
 
-TEST_CASE("copy executor: links materialize", "[executor][link]")
+TEST_CASE("copy executor: links are copied as links storing the same target", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (symlinkCreationUnavailable(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/src"));
+	writeTestFile(base % "/src/real.bin", patternedContents(400));
+	writeTestFile(base % "/linktarget.bin", patternedContents(800));
+	REQUIRE(createFileSymlink(base % "/linktarget.bin", base % "/src/absolute.bin"));
+	REQUIRE(createFileSymlink(QStringLiteral("real.bin"), base % "/src/relative.bin"));
+	REQUIRE(createFileSymlink(base % "/no-such-target", base % "/src/broken.bin"));
+	REQUIRE(QDir{}.mkpath(base % "/dirtarget"));
+	writeTestFile(base % "/dirtarget/inside.bin", patternedContents(900));
+	REQUIRE(createDirectoryLink(base % "/dirtarget", base % "/src/dirlink"));
+	REQUIRE(createDirectoryLink(base % "/src", base % "/src/uplink")); // A cycle, were it followed
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+	OperationScript script;
+	const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+	CHECK(summary.status == CompletionStatus::Completed);
+	CHECK(script.seenRequests.empty());
+	CHECK(script.seenPlans.empty());
+	CHECK(summary.completedItems == 7); // src, real.bin and five links
+	CHECK(summary.transferredBytes == 400); // A link streams nothing
+	REQUIRE(!script.progress.empty());
+	CHECK(script.progress.back().bytesTotal == uint64_t{ 400 });
+	CHECK(script.progress.back().itemsTotal == size_t{ 7 });
+
+	for (const char* name : { "absolute.bin", "relative.bin", "broken.bin", "dirlink", "uplink" })
+	{
+		CAPTURE(name);
+		CHECK(isLinkKind(snapshotOf(base % "/dest/src/" % QLatin1String(name)).kind));
+		CHECK(linkDefinitionOf(base % "/dest/src/" % QLatin1String(name)) == linkDefinitionOf(base % "/src/" % QLatin1String(name)));
+	}
+	CHECK(readFileContents(base % "/dest/src/absolute.bin") == patternedContents(800)); // The original target
+	CHECK(readFileContents(base % "/dest/src/relative.bin") == patternedContents(400)); // Resolved next to the copy: dest/src/real.bin
+	CHECK(readFileContents(base % "/dest/src/dirlink/inside.bin") == patternedContents(900));
+	CHECK(readFileContents(base % "/linktarget.bin") == patternedContents(800));
+}
+
+TEST_CASE("copy executor: a selected link is copied as a link", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/target"));
+	writeTestFile(base % "/target/inside.bin", patternedContents(300));
+	REQUIRE(createDirectoryLink(base % "/target", base % "/dirlink"));
+
+	OperationScript script;
+	const auto summary = runCopy(script, { base % "/dirlink" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+	CHECK(summary.status == CompletionStatus::Completed);
+	CHECK(summary.completedItems == 1);
+	CHECK(summary.transferredBytes == 0);
+	CHECK(snapshotOf(base % "/dest/dirlink").kind == OperationEntryKind::DirectoryLink);
+	CHECK(linkDefinitionOf(base % "/dest/dirlink") == linkDefinitionOf(base % "/dirlink"));
+	CHECK(readFileContents(base % "/dest/dirlink/inside.bin") == patternedContents(300));
+}
+
+TEST_CASE("copy executor: a link collides as a single entry", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/target"));
+	REQUIRE(createDirectoryLink(base % "/target", base % "/link"));
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+	SECTION("a directory in the way is a type mismatch, never merged into")
+	{
+		REQUIRE(QDir{}.mkpath(base % "/dest/link"));
+		writeTestFile(base % "/dest/link/kept.bin", patternedContents(100));
+
+		OperationScript script{ .decisions = { act(DecisionAction::Skip) } };
+		const auto summary = runCopy(script, { base % "/link" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(summary.skippedItems == 1);
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::TypeMismatch);
+		CHECK(snapshotOf(base % "/dest/link").kind == OperationEntryKind::Directory);
+		CHECK(readFileContents(base % "/dest/link/kept.bin") == patternedContents(100));
+	}
+
+	SECTION("an existing file is replaced where the platform can publish a directory link over it")
+	{
+		writeTestFile(base % "/dest/link", patternedContents(100));
+
+#ifdef _WIN32
+		OperationScript script{ .decisions = { act(DecisionAction::Skip) } };
+#else
+		OperationScript script{ .decisions = { act(DecisionAction::Replace) } };
+#endif
+		const auto summary = runCopy(script, { base % "/link" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		CHECK(summary.status == CompletionStatus::Completed);
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+#ifdef _WIN32
+		// A directory link is a directory entry on Windows: it cannot replace a file
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::TypeMismatch);
+		CHECK(snapshotOf(base % "/dest/link").kind == OperationEntryKind::RegularFile);
+#else
+		CHECK(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
+		CHECK(linkDefinitionOf(base % "/dest/link") == linkDefinitionOf(base % "/link"));
+#endif
+	}
+}
+
+TEST_CASE("copy executor: links the destination cannot hold are asked about once", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/src"));
+	writeTestFile(base % "/src/real.bin", patternedContents(400));
+	REQUIRE(QDir{}.mkpath(base % "/dirtarget"));
+	writeTestFile(base % "/dirtarget/inside.bin", patternedContents(900));
+	REQUIRE(createDirectoryLink(base % "/dirtarget", base % "/src/first"));
+	REQUIRE(createDirectoryLink(base % "/dirtarget", base % "/src/second"));
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+	// The probe link fails as on FAT; both links are of one type, so one probe stands for both
+	CFaultHookScope hooks;
+	hooks.forceNativeError(Point::CreateLink_Native, linksUnsupportedCode);
+
+	OperationScript script;
+	const auto checkTheOneQuestion = [&] {
+		REQUIRE(script.seenRequests.size() == 1);
+		const DecisionRequest& request = script.seenRequests[0];
+		CHECK(request.issue.kind == IssueKind::LinksUnsupported);
+		CHECK(request.allowedActions == AllowedActions{ DecisionAction::CopyLinkTargets, DecisionAction::Skip, DecisionAction::Cancel });
+		CHECK(!remainingMatchingScopeOffered(request)); // No answer is remembered: one question covers every such link
+		CHECK(fileOperationCancelConsequencesText(request).isEmpty()); // Nothing is published yet
+		REQUIRE(request.issue.failure.has_value());
+		CHECK(request.issue.failure->action == FailedAction::CreateLink);
+		CHECK(request.issue.failure->filesystemError.category == FileErrorCategory::Unsupported);
+		CHECK(hooks.arrivalCount(Point::CreateLink_Native) == 1); // Only the probe: no link was attempted
+	};
+
+	SECTION("skipping leaves the links out and copies everything else")
+	{
+		script.decisions = { act(DecisionAction::Skip) };
+		const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		checkTheOneQuestion();
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(summary.skippedItems == 2);
+		CHECK(readFileContents(base % "/dest/src/real.bin") == patternedContents(400));
+		CHECK(entryAbsent(base % "/dest/src/first"));
+		CHECK(entryAbsent(base % "/dest/src/second"));
+	}
+
+	SECTION("copying what they point to materializes the links")
+	{
+		script.decisions = { act(DecisionAction::CopyLinkTargets) };
+		const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		checkTheOneQuestion();
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(snapshotOf(base % "/dest/src/first").kind == OperationEntryKind::Directory);
+		CHECK(readFileContents(base % "/dest/src/first/inside.bin") == patternedContents(900));
+		CHECK(readFileContents(base % "/dest/src/second/inside.bin") == patternedContents(900));
+		CHECK(summary.transferredBytes == 400 + 2 * 900);
+	}
+
+	SECTION("cancelling copies nothing")
+	{
+		script.decisions = { act(DecisionAction::Cancel) };
+		const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		checkTheOneQuestion();
+		CHECK(summary.status == CompletionStatus::Cancelled);
+		CHECK(entryAbsent(base % "/dest/src"));
+	}
+}
+
+TEST_CASE("copy executor: a link that fails to be created is asked about as a failure", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/src"));
+	REQUIRE(QDir{}.mkpath(base % "/dirtarget"));
+	REQUIRE(createDirectoryLink(base % "/dirtarget", base % "/src/dirlink"));
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+	CFaultHookScope hooks;
+	hooks.forceNativeError(Point::CreateLink_Native, ioFailureCode, 1, 1); // The probe passes, the copy fails
+
+	OperationScript script{ .decisions = { act(DecisionAction::Skip) } };
+	const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+	CHECK(summary.status == CompletionStatus::Completed);
+	CHECK(summary.skippedItems == 1);
+	REQUIRE(script.seenRequests.size() == 1);
+	CHECK(script.seenRequests[0].issue.kind == IssueKind::ActionFailed);
+	REQUIRE(script.seenRequests[0].issue.failure.has_value());
+	CHECK(script.seenRequests[0].issue.failure->action == FailedAction::CreateLink);
+	CHECK(entryAbsent(base % "/dest/src/dirlink"));
+	CHECK(QDir{ base % "/dest/src" }.entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty()); // No temporary link left
+}
+
+TEST_CASE("copy executor: a copied link keeps its own times", "[executor][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/target"));
+	REQUIRE(createDirectoryLink(base % "/target", base % "/link"));
+	REQUIRE(setEntryTimes(base % "/target", thin_io::entry_times{ .last_write = thin_io::timestamp{ .seconds = 1'300'000'000 } }));
+	REQUIRE(setEntryTimes(base % "/link", thin_io::entry_times{ .last_write = thin_io::timestamp{ .seconds = 1'500'000'000 } }, thin_io::link_behavior::do_not_follow));
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+	SECTION("the link's own last-write time, not its target's")
+	{
+		OperationScript script;
+		const auto summary = runCopy(script, { base % "/link" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(summary.warningCount == 0);
+		CHECK(linkOwnTimes(base % "/dest/link").last_write.seconds == 1'500'000'000);
+		CHECK(entryLastWriteSeconds(base % "/target") == 1'300'000'000);
+	}
+
+	SECTION("a failure to apply them is a warning, and the link is still copied")
+	{
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::ApplyLinkMetadata_Native, ioFailureCode);
+
+		OperationScript script;
+		const auto summary = runCopy(script, { base % "/link" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(summary.completedItems == 1);
+		CHECK(summary.warningCount == 1);
+		REQUIRE(summary.representativeWarnings.size() == 1);
+		CHECK(summary.representativeWarnings[0].failure.action == FailedAction::PreserveLinkMetadata);
+		CHECK(linkDefinitionOf(base % "/dest/link") == linkDefinitionOf(base % "/link"));
+	}
+}
+
+TEST_CASE("copy executor: with CopyTargets, links materialize", "[executor][link]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -984,10 +1248,6 @@ TEST_CASE("copy executor: links materialize", "[executor][link]")
 	REQUIRE(createFileSymlink(base % "/linktarget.bin", base % "/src/filelink.bin"));
 	REQUIRE(QDir{}.mkpath(base % "/dirtarget"));
 	writeTestFile(base % "/dirtarget/inside.bin", patternedContents(900));
-
-	if (linksUnsupportedByFilesystem(base))
-		return;
-
 	REQUIRE(createDirectoryLink(base % "/dirtarget", base % "/src/dirlink"));
 #ifdef _WIN32
 	// A listed child is classified from the reparse tag the directory listing carries, not from a separate
@@ -997,19 +1257,19 @@ TEST_CASE("copy executor: links materialize", "[executor][link]")
 	REQUIRE(QDir{}.mkpath(base % "/dest"));
 
 	OperationScript script;
-	const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+	const auto summary = runCopyOfLinkTargets(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(script.seenRequests.empty());
 
 	CHECK(readFileContents(base % "/dest/src/real.bin") == patternedContents(400));
 	CHECK(readFileContents(base % "/dest/src/filelink.bin") == patternedContents(800)); // Materialized target content
-	CHECK(!QFileInfo{ base % "/dest/src/filelink.bin" }.isSymLink());
+	CHECK(snapshotOf(base % "/dest/src/filelink.bin").kind == OperationEntryKind::RegularFile);
 	CHECK(readFileContents(base % "/dest/src/dirlink/inside.bin") == patternedContents(900)); // Materialized directory
-	CHECK(!QFileInfo{ base % "/dest/src/dirlink" }.isSymLink());
+	CHECK(snapshotOf(base % "/dest/src/dirlink").kind == OperationEntryKind::Directory);
 #ifdef _WIN32
 	CHECK(readFileContents(base % "/dest/src/dirsymlink/inside.bin") == patternedContents(900));
-	CHECK(!QFileInfo{ base % "/dest/src/dirsymlink" }.isSymLink());
+	CHECK(snapshotOf(base % "/dest/src/dirsymlink").kind == OperationEntryKind::Directory);
 #endif
 }
 
@@ -1043,7 +1303,7 @@ TEST_CASE("copy executor: an Other entry is skippable", "[executor]")
 }
 #endif
 
-TEST_CASE("copy executor: a cycle-terminated directory link materializes as an empty directory", "[executor][link]")
+TEST_CASE("copy executor: with CopyTargets, a cycle-terminated directory link materializes as an empty directory", "[executor][link]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -1059,7 +1319,7 @@ TEST_CASE("copy executor: a cycle-terminated directory link materializes as an e
 	REQUIRE(QDir{}.mkpath(base % "/dest"));
 
 	OperationScript script;
-	const auto summary = runCopy(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+	const auto summary = runCopyOfLinkTargets(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 
 	CHECK(summary.status == CompletionStatus::Completed);
 	CHECK(readFileContents(base % "/dest/src/a.bin") == patternedContents(100));

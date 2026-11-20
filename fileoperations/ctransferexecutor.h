@@ -46,6 +46,11 @@ private:
 	// The outcome alternative ends the root: moved by one rename, skipped, failed, cancelled.
 	[[nodiscard]] std::variant<PlannedRoot, NodeOutcome> planRoot(const RootTransferIntent& intent);
 
+	// Finds the links the destination cannot hold - a kind no link creation can recreate, or one a probe link fails
+	// to be created for - and asks one LinksUnsupported question about all of them. Skip marks each of them skipped;
+	// CopyLinkTargets scans every root holding one of them again, with links followed. False = cancelled.
+	[[nodiscard]] bool settleUncreatableLinks(std::vector<PlannedRoot>& roots);
+
 	// Records the conflicts, presents the plan, and re-plans while the answers change destinations (renames).
 	// Leaves the context holding the final answers. False = cancelled.
 	[[nodiscard]] bool resolveConflictPlan(const std::vector<PlannedRoot>& roots);
@@ -76,10 +81,10 @@ private:
 	// --- Shared by copy and move ---
 
 	// Fresh root inspection with the local ActionFailed retry policy; the outcome alternative ends the root.
-	[[nodiscard]] std::variant<EntrySnapshot, NodeOutcome> inspectSourceRoot(const CEntryPath& source);
+	[[nodiscard]] std::variant<EntrySnapshot, NodeOutcome> inspectSourceRoot(const CEntryPath& source, LinkTransferMode linkMode);
 
-	// The materializing manifest with the local ActionFailed retry policy.
-	[[nodiscard]] std::variant<SourceNode, NodeOutcome> buildManifestWithRetry(const EntrySnapshot& root);
+	// The manifest with the local ActionFailed retry policy.
+	[[nodiscard]] std::variant<SourceNode, NodeOutcome> buildManifestWithRetry(const EntrySnapshot& root, SourceTreeBuildMode mode);
 
 	// Summary accounting for a root that ended before its manifest was built; the root entry itself is the only known item.
 	[[nodiscard]] NodeOutcome finishUnscannedRoot(NodeOutcome outcome);
@@ -103,17 +108,30 @@ private:
 	[[nodiscard]] std::optional<NodeOutcome> stagedFileTransferWithPolicy(const EntrySnapshot& source, const CEntryPath& destination,
 		ReplacementMode replacement, PublishedSourceAction sourceAction, bool makeWritableAuthorized);
 
+	// The link counterpart of stagedFileTransferWithPolicy: one copy of the link as itself per attempt.
+	[[nodiscard]] std::optional<NodeOutcome> linkCopyWithPolicy(const EntrySnapshot& source, const CEntryPath& destination,
+		ReplacementMode replacement, PublishedSourceAction sourceAction);
+
+	// A node transferred as one entry - a file, a materialized file link, or a link recreated as itself - through the
+	// resolution loop. An owned move renames it where the volume allows, which also gives an authorized replacement or a
+	// respelled target one atomic rename; otherwise it is copied, and an owned move's source is then removed.
+	[[nodiscard]] NodeOutcome transferLeafNode(const SourceNode& node, CEntryPath proposedDestination, bool knownCrossDevice);
+
 	void abortStagedSession(CStagedFileCopy& session, const EntrySnapshot& source);
 	void recordTimestampWarning(const EntrySnapshot& source, const CEntryPath& destination, const CEntryPath& failedPath, CFileSystemError error);
 
 	void accountSkippedSubtree(const SourceNode& node);
 	void accountAlreadySatisfiedSubtree(const SourceNode& node);
 
+	// The end of the single entry progress shows as current: counted in the summary and in progress, then cleared.
+	[[nodiscard]] NodeOutcome completeCurrentEntry();
+	[[nodiscard]] NodeOutcome skipCurrentEntry(uint64_t plannedBytes);
+
 	// --- Copy ---
 
 	[[nodiscard]] NodeOutcome copyRoot(const PlannedRoot& root);
 
-	// Dispatches one manifest node: Other handling, resolution, file copy or directory recursion.
+	// Dispatches one manifest node: a skipped link, Other handling, a single-entry transfer, or directory recursion.
 	[[nodiscard]] NodeOutcome copyNode(const SourceNode& node, CEntryPath proposedDestination, TransferNodePosition position);
 
 	// Creates/merges done: copies the children and finalizes timestamps for an operation-created directory.
@@ -123,14 +141,10 @@ private:
 
 	[[nodiscard]] NodeOutcome moveRoot(const PlannedRoot& root);
 
-	// Dispatches one manifest node: rename-first for owned entries, then Other handling, resolution,
-	// staged transfer or directory recursion. knownCrossDevice suppresses rename attempts for the
-	// whole subtree once one boundary has classified as cross-device.
+	// Dispatches one manifest node: a skipped link, then rename-first for owned entries, Other handling, a single-entry
+	// transfer, or directory recursion. knownCrossDevice suppresses rename attempts for the whole subtree once one
+	// boundary has classified as cross-device.
 	[[nodiscard]] NodeOutcome moveNode(const SourceNode& node, CEntryPath proposedDestination, TransferNodePosition position, bool knownCrossDevice);
-
-	// The file-node resolution loop: post-resolution rename (atomic same-filesystem replacement), the
-	// pre-publication read-only policy, and the staged transfer with publication-race re-resolution.
-	[[nodiscard]] NodeOutcome moveFileNode(const SourceNode& node, CEntryPath proposedDestination, bool knownCrossDevice);
 
 	// Moves the children and finalizes timestamps like the copy counterpart, then removes the emptied
 	// owned source directory (or link entry) through the committed cleanup policy. Cleanup requires every
@@ -159,6 +173,7 @@ private:
 	const uint64_t _transferChunkSize;
 
 	TransferKind _requestKind = TransferKind::Copy;
+	LinkTransferMode _linkMode = LinkTransferMode::CopyLinks;
 	std::vector<thin_io::entry_identity> _destinationAncestorIdentities;
 	size_t _planningItemsFound = 0; // The current root's manifest size, for the Scanning snapshots of the planning walk
 };

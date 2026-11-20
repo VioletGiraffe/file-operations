@@ -61,7 +61,10 @@ enum class FailedAction
 	RemoveEntry,
 	RemovePublishedMoveSource,
 	CleanupStaging,
-	PreserveDirectoryTimestamps
+	PreserveDirectoryTimestamps,
+	ReadLink,
+	CreateLink,
+	PreserveLinkMetadata
 };
 
 struct FailureDetails
@@ -82,6 +85,11 @@ enum class OperationEntryKind : uint8_t
 	Other, // FIFO/socket/device etc., or a link to one - never streamed as a regular file
 	Unknown // Diagnostic snapshots only: inspection failed before the kind could be established
 };
+
+[[nodiscard]] constexpr bool isLinkKind(const OperationEntryKind kind) noexcept
+{
+	return kind == OperationEntryKind::FileLink || kind == OperationEntryKind::DirectoryLink;
+}
 
 struct EntrySnapshot
 {
@@ -159,11 +167,19 @@ enum class TransferKind
 	Move
 };
 
+// What a transfer does with a link, whether selected or met inside a selected folder.
+enum class LinkTransferMode
+{
+	CopyLinks,  // The destination gets a link storing the same target
+	CopyTargets // The destination gets what the link points to: a file link's bytes, a directory link's content
+};
+
 struct TransferRequest
 {
 	TransferKind kind;
 	std::vector<CEntryPath> sources;
 	DestinationSpec destination;
+	LinkTransferMode linkMode = LinkTransferMode::CopyLinks; // Always CopyLinks for a move
 };
 
 struct PermanentDeleteRequest
@@ -194,15 +210,16 @@ enum class RequestValidationError
 // The only entry points for raw UI/drag-and-drop path text. Parse every path (never trimmed - a trailing
 // space belongs to the name), filter the synthetic parent ([..]) entries once, and enforce source-count and
 // non-recursive-destination rules. The UI has already chosen the intent; no filesystem inspection happens here.
-[[nodiscard]] std::expected<TransferRequest, RequestValidationError> makeTransferRequest(
-	TransferKind kind, const QStringList& rawSourcePaths, DestinationIntent intent, const QString& rawDestinationPath);
+// A move keeps its links: linkMode applies to a copy only.
+[[nodiscard]] std::expected<TransferRequest, RequestValidationError> makeTransferRequest(TransferKind kind, const QStringList& rawSourcePaths,
+	DestinationIntent intent, const QString& rawDestinationPath, LinkTransferMode linkMode = LinkTransferMode::CopyLinks);
 [[nodiscard]] std::expected<PermanentDeleteRequest, RequestValidationError> makePermanentDeleteRequest(const QStringList& rawSourcePaths);
 
 [[nodiscard]] std::vector<RootTransferIntent> rootTransferIntents(const TransferRequest& request);
 
 // --- Typed issues and decisions ---
 
-// The six genuinely different user policy questions. Deliberately not a diagnostic-stage taxonomy:
+// The genuinely different user policy questions. Deliberately not a diagnostic-stage taxonomy:
 // FailedAction supplies the wording detail, never the policy.
 enum class IssueKind
 {
@@ -211,7 +228,10 @@ enum class IssueKind
 	TypeMismatch,
 	ActionFailed,
 	ReadOnlySourceRemoval,
-	UnsupportedEntry
+	UnsupportedEntry,
+	// Asked once per transfer, before its conflict plan, about every link the destination cannot hold.
+	// The source is one of those links; the failure is why one could not be created.
+	LinksUnsupported
 };
 
 enum class DecisionAction
@@ -222,7 +242,8 @@ enum class DecisionAction
 	MakeWritable,
 	Rename,
 	Retry,
-	Cancel
+	Cancel,
+	CopyLinkTargets
 };
 
 enum class DecisionScope
@@ -240,6 +261,7 @@ struct OperationIssue
 	EntrySnapshot source;
 	std::optional<EntrySnapshot> destination;
 	std::optional<FailureDetails> failure; // Only for ActionFailed (and raced ReadOnlySourceRemoval detail)
+	bool sourceRecreatedAsLink = false; // The source link arrives as a link: a plan row compares its own time, not its target's
 };
 
 // Neutral non-interactive record for the warning and terminal-failure channels. No issue kind, no legal
@@ -265,7 +287,7 @@ struct Decision
 	std::optional<QString> newName; // Required by Rename, meaningless otherwise
 };
 
-// The normative six-row policy table. These two functions are its only implementation; there is no
+// The normative policy table, one row per issue kind. These two functions are its only implementation; there is no
 // second capability list, and the UI derives its buttons from the delivered AllowedActions.
 [[nodiscard]] AllowedActions allowedActionsFor(IssueKind kind);
 // Only a rememberable action may be offered or stored with RemainingMatchingIssues scope.

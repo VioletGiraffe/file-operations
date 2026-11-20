@@ -265,6 +265,20 @@ TEST_CASE("source tree: directory links per build mode", "[sourcetree][link]")
 		CHECK(link->ownership == SourceOwnership::Owned);
 	}
 
+	SECTION("link-preserving transfer never follows: the link is a leaf to recreate")
+	{
+		const SourceNode tree = buildTree(base % "/root", SourceTreeBuildMode::LinkPreservingTransfer);
+		CHECK(tree.subtreeItems == 2);
+		CHECK(tree.subtreeBytes == 0);
+		CHECK(tree.linkTreatment == LinkTreatment::None);
+
+		const SourceNode* link = childNamed(tree, QStringLiteral("dirlink"));
+		REQUIRE(link != nullptr);
+		CHECK(link->entry.kind == OperationEntryKind::DirectoryLink); // By its target, as the transfer shows it
+		CHECK(link->linkTreatment == LinkTreatment::Recreate);
+		CHECK(link->children.empty());
+	}
+
 	SECTION("materializing transfer borrows the linked content")
 	{
 		const SourceNode tree = buildTree(base % "/root", SourceTreeBuildMode::MaterializingTransfer);
@@ -274,6 +288,7 @@ TEST_CASE("source tree: directory links per build mode", "[sourcetree][link]")
 		const SourceNode* link = childNamed(tree, QStringLiteral("dirlink"));
 		REQUIRE(link != nullptr);
 		CHECK(link->entry.kind == OperationEntryKind::DirectoryLink);
+		CHECK(link->linkTreatment == LinkTreatment::Materialize);
 		CHECK(link->ownership == SourceOwnership::Owned); // The link entry itself is ours
 		CHECK(link->subtreeItems == 4);
 		CHECK(link->subtreeBytes == 4500);
@@ -360,6 +375,37 @@ TEST_CASE("source tree: file links per build mode", "[sourcetree][link]")
 		CHECK(link->entry.kind == OperationEntryKind::FileLink);
 		CHECK(link->entry.size == 7000);
 		CHECK(tree.subtreeBytes == 7000);
+	}
+
+	SECTION("link-preserving transfer shows the target size but streams nothing")
+	{
+		const SourceNode tree = buildTree(base % "/root", SourceTreeBuildMode::LinkPreservingTransfer);
+		const SourceNode* link = childNamed(tree, QStringLiteral("filelink.bin"));
+		REQUIRE(link != nullptr);
+		CHECK(link->entry.kind == OperationEntryKind::FileLink);
+		CHECK(link->entry.size == 7000);
+		CHECK(link->linkTreatment == LinkTreatment::Recreate);
+		CHECK(tree.subtreeBytes == 0);
+	}
+
+	SECTION("link-preserving transfer recreates a link to a special file as a file link")
+	{
+		if (specialFilesUnsupportedByFilesystem(base))
+			return;
+
+		REQUIRE(::mkfifo(QFile::encodeName(base % "/fifo").constData(), 0600) == 0);
+		REQUIRE(QFile::link(base % "/fifo", base % "/root/fifolink"));
+
+		const SourceNode preserved = buildTree(base % "/root", SourceTreeBuildMode::LinkPreservingTransfer);
+		const SourceNode* link = childNamed(preserved, QStringLiteral("fifolink"));
+		REQUIRE(link != nullptr);
+		CHECK(link->entry.kind == OperationEntryKind::FileLink);
+		CHECK(link->linkTreatment == LinkTreatment::Recreate);
+
+		const SourceNode materialized = buildTree(base % "/root", SourceTreeBuildMode::MaterializingTransfer);
+		const SourceNode* special = childNamed(materialized, QStringLiteral("fifolink"));
+		REQUIRE(special != nullptr);
+		CHECK(special->entry.kind == OperationEntryKind::Other); // Never streamed
 	}
 
 	SECTION("permanent delete sees only the link entry")

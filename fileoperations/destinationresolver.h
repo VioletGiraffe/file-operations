@@ -43,5 +43,10 @@ enum class TransferNodePosition
 
 [[nodiscard]] DestinationChoice resolveFileDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed);
 
+// For a link recreated as itself. It collides like a file: it never merges into a destination directory.
+// On Windows a directory link is a directory entry, so it can neither replace nor be replaced.
+// The entry the link resolves to is AlreadySatisfied: replacing it would leave a link to itself in place of its content.
+[[nodiscard]] DestinationChoice resolveLinkDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed);
+
 [[nodiscard]] DestinationChoice resolveDirectoryDestination(COperationExecutionContext& context, const EntrySnapshot& source,
 	CEntryPath proposed, TransferNodePosition position);

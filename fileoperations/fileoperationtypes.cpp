@@ -56,8 +56,8 @@ std::expected<std::vector<CEntryPath>, RequestValidationError> parseSourcePaths(
 
 } // namespace
 
-std::expected<TransferRequest, RequestValidationError> makeTransferRequest(
-	const TransferKind kind, const QStringList& rawSourcePaths, const DestinationIntent intent, const QString& rawDestinationPath)
+std::expected<TransferRequest, RequestValidationError> makeTransferRequest(const TransferKind kind, const QStringList& rawSourcePaths,
+	const DestinationIntent intent, const QString& rawDestinationPath, const LinkTransferMode linkMode)
 {
 	auto sources = parseSourcePaths(rawSourcePaths);
 	if (!sources)
@@ -74,7 +74,8 @@ std::expected<TransferRequest, RequestValidationError> makeTransferRequest(
 	if (intent == DestinationIntent::ExactEntry && destination->isRoot())
 		return std::unexpected{ RequestValidationError::InvalidPath };
 
-	TransferRequest request{ kind, mv(*sources), DestinationSpec{ intent, mv(*destination) } };
+	TransferRequest request{ kind, mv(*sources), DestinationSpec{ intent, mv(*destination) },
+		kind == TransferKind::Move ? LinkTransferMode::CopyLinks : linkMode };
 	for (const RootTransferIntent& root : rootTransferIntents(request))
 	{
 		if (root.proposedDestination.isStrictDescendantOf(root.source))
@@ -137,6 +138,8 @@ AllowedActions allowedActionsFor(const IssueKind kind)
 		return { MakeWritable, Retry, Skip, Cancel };
 	case IssueKind::UnsupportedEntry:
 		return { Skip, Cancel };
+	case IssueKind::LinksUnsupported:
+		return { CopyLinkTargets, Skip, Cancel };
 	}
 
 	assert_unconditional_r("Unknown IssueKind");
@@ -158,6 +161,8 @@ bool isActionRememberable(const IssueKind kind, const DecisionAction action)
 		return action == Skip;
 	case IssueKind::ReadOnlySourceRemoval:
 		return action == MakeWritable || action == Skip;
+	case IssueKind::LinksUnsupported: // Asked once: the answer already covers every such link
+		return false;
 	}
 
 	assert_unconditional_r("Unknown IssueKind");
@@ -175,6 +180,7 @@ std::optional<DecisionAction> defaultActionFor(const IssueKind kind)
 	case IssueKind::TypeMismatch: // Nothing to proceed with: an entry cannot replace one of a different type
 	case IssueKind::ReadOnlySourceRemoval: // Overriding the read-only flag to delete the file must be deliberate
 	case IssueKind::UnsupportedEntry: // Only Skip and Cancel exist, and neither should happen by reflex
+	case IssueKind::LinksUnsupported: // Either answer changes what arrives: the links' content, or nothing in their place
 		return {};
 	}
 	return {};

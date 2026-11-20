@@ -25,5 +25,5 @@
 - Executors are synchronous. `CFileOperationJob` is the engine's only cross-thread boundary: pause, cancellation, decisions and the event queue.
 - The UI chooses the `DestinationIntent` once, when building a request; nothing below reinterprets it from path spelling or filesystem state.
 - `CEntryPath` comes only from `parseOperationPath()` or operations on valid paths. Its equality is exact spelling; same-entry decisions use filesystem identity (`checkSameEntry()`).
-- Links are entries distinct from their targets: delete and same-filesystem move act on the link, copy materializes the target, and content reached through a directory link is never removed.
+- Links are entries distinct from their targets: delete and move act on the link, copy recreates it unless asked to materialize the target, and content reached through a directory link is never removed.
 - Fault-injection hooks compile only with `FILE_OPERATIONS_TEST_HOOKS`, into the `fileoperations_testhooks` library variant the suites link; production builds see the no-op stubs.

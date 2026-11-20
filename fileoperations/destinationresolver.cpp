@@ -12,7 +12,8 @@
 namespace
 {
 
-bool fileReplacementUnsupported(const OperationEntryKind destinationKind) noexcept
+// sourceIsDirectoryLink: the source is published as a directory link, which is a directory entry on Windows.
+bool replacementUnsupported(const OperationEntryKind destinationKind, [[maybe_unused]] const bool sourceIsDirectoryLink) noexcept
 {
 	if (destinationKind == OperationEntryKind::Directory)
 		return true;
@@ -20,12 +21,20 @@ bool fileReplacementUnsupported(const OperationEntryKind destinationKind) noexce
 #ifdef _WIN32
 	// POSIX rename() can atomically replace a directory symlink entry without touching its target. Windows
 	// records directory symlinks and junctions with FILE_ATTRIBUTE_DIRECTORY, and MoveFileExW with
-	// MOVEFILE_REPLACE_EXISTING refuses every such destination. Staged copy publishes through that same
-	// primitive, so it provides no fallback that could honor Replace on Windows.
-	return destinationKind == OperationEntryKind::DirectoryLink;
+	// MOVEFILE_REPLACE_EXISTING refuses every such destination, and every such source. Publication renames
+	// through that same primitive, so nothing could honor Replace for either on Windows.
+	return destinationKind == OperationEntryKind::DirectoryLink || sourceIsDirectoryLink;
 #else
 	return false;
 #endif
+}
+
+// False when either identity cannot be read.
+bool linkResolvesToEntry(const CEntryPath& linkPath, const CEntryPath& entryPath)
+{
+	const auto target = readEntryIdentity(linkPath, thin_io::link_behavior::follow);
+	const auto entry = readEntryIdentity(entryPath, thin_io::link_behavior::do_not_follow);
+	return target && *target && entry && *entry && **target == **entry;
 }
 
 // One prompt for a collision-type issue, owning the Rename input handling: an invalid or missing new
@@ -61,12 +70,10 @@ std::optional<DestinationChoice> resolveInspectionFailure(COperationExecutionCon
 	return {};
 }
 
-} // namespace
-
-DestinationChoice resolveFileDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed)
+// The collision loop for a source that arrives as a single entry: a file, or with recreatedLink a link recreated as itself.
+DestinationChoice resolveEntryDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed,
+	const bool recreatedLink)
 {
-	assert_debug_only(source.kind == OperationEntryKind::RegularFile || source.kind == OperationEntryKind::FileLink);
-
 	for (;;)
 	{
 		const auto destination = inspectEntry(proposed);
@@ -87,13 +94,12 @@ DestinationChoice resolveFileDestination(COperationExecutionContext& context, co
 				return mv(*verdict);
 			continue;
 		}
-		if (*sameEntry == SameEntryVerdict::Same)
+		if (*sameEntry == SameEntryVerdict::Same || (recreatedLink && linkResolvesToEntry(source.path, proposed)))
 			return AlreadySatisfied{};
 
 		const EntrySnapshot& destinationEntry = **destination;
-		const bool replacementUnsupported = fileReplacementUnsupported(destinationEntry.kind);
-		const OperationIssue issue{ replacementUnsupported ? IssueKind::TypeMismatch : IssueKind::FileReplacement,
-			source, destinationEntry, {} };
+		const bool cannotReplace = replacementUnsupported(destinationEntry.kind, recreatedLink && source.kind == OperationEntryKind::DirectoryLink);
+		const OperationIssue issue{ cannotReplace ? IssueKind::TypeMismatch : IssueKind::FileReplacement, source, destinationEntry, {}, recreatedLink };
 
 		auto outcome = promptForCollision(context, issue, proposed);
 		if (auto* respelled = std::get_if<CEntryPath>(&outcome))
@@ -105,7 +111,7 @@ DestinationChoice resolveFileDestination(COperationExecutionContext& context, co
 		switch (std::get<DecisionAction>(outcome))
 		{
 		case DecisionAction::Replace:
-			assert_debug_only(!replacementUnsupported);
+			assert_debug_only(!cannotReplace);
 			return UseDestination{ mv(proposed), ReplacementMode::ReplaceExistingFile };
 		case DecisionAction::Skip:
 			return SkipNode{};
@@ -114,6 +120,20 @@ DestinationChoice resolveFileDestination(COperationExecutionContext& context, co
 			return CancelOperation{};
 		}
 	}
+}
+
+} // namespace
+
+DestinationChoice resolveFileDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed)
+{
+	assert_debug_only(source.kind == OperationEntryKind::RegularFile || source.kind == OperationEntryKind::FileLink);
+	return resolveEntryDestination(context, source, mv(proposed), false);
+}
+
+DestinationChoice resolveLinkDestination(COperationExecutionContext& context, const EntrySnapshot& source, CEntryPath proposed)
+{
+	assert_debug_only(isLinkKind(source.kind));
+	return resolveEntryDestination(context, source, mv(proposed), true);
 }
 
 DestinationChoice resolveDirectoryDestination(COperationExecutionContext& context, const EntrySnapshot& source,

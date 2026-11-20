@@ -397,3 +397,72 @@ TEST_CASE("conflict planning: a move plans the questions of its copy-based path"
 		setFileReadOnly(base % "/dest/src/ro.bin", false);
 	}
 }
+
+TEST_CASE("conflict planning: a row compares the times of the entries the copy reads and replaces", "[planning][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (symlinkCreationUnavailable(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/src"));
+	REQUIRE(QDir{}.mkpath(base % "/dest"));
+	const auto lastWrite = [](const int64_t seconds) { return thin_io::entry_times{ .last_write = thin_io::timestamp{ .seconds = seconds } }; };
+	const auto writeFileWithTime = [&](const QString& path, const int64_t seconds) {
+		writeTestFile(path, patternedContents(100));
+		REQUIRE(setEntryTimes(path, lastWrite(seconds)));
+	};
+	const auto createLinkWithOwnTime = [&](const QString& target, const QString& link, const int64_t seconds) {
+		REQUIRE(createFileSymlink(target, link));
+		REQUIRE(setEntryTimes(link, lastWrite(seconds), thin_io::link_behavior::do_not_follow));
+	};
+
+	OperationScript script{ .decisions = { act(DecisionAction::Skip) } };
+	const auto theOnlyRow = [&]() -> const PlannedConflict& {
+		REQUIRE(script.seenPlans.size() == 1);
+		REQUIRE(script.seenPlans[0].size() == 1);
+		REQUIRE(script.seenPlans[0][0].issue.kind == IssueKind::FileReplacement);
+		return script.seenPlans[0][0];
+	};
+
+	SECTION("a link pointed elsewhere since the last copy replaces the stale one, though its target is older")
+	{
+		writeFileWithTime(base % "/old-target.bin", 1'300'000'000);
+		writeFileWithTime(base % "/new-target.bin", 1'600'000'000);
+		createLinkWithOwnTime(base % "/old-target.bin", base % "/src/link.bin", 1'500'000'000);
+		createLinkWithOwnTime(base % "/new-target.bin", base % "/dest/link.bin", 1'400'000'000);
+
+		runCopy(script, { base % "/src/link.bin" }, DestinationIntent::IntoDirectory, base % "/dest");
+		CHECK(compareSides(theOnlyRow()) == SideComparison::DestinationOlder);
+	}
+
+	SECTION("a broken link has a time to compare")
+	{
+		createLinkWithOwnTime(base % "/no-such-target", base % "/src/link.bin", 1'500'000'000);
+		writeFileWithTime(base % "/dest/link.bin", 1'400'000'000);
+
+		runCopy(script, { base % "/src/link.bin" }, DestinationIntent::IntoDirectory, base % "/dest");
+		CHECK(compareSides(theOnlyRow()) == SideComparison::DestinationOlder);
+	}
+
+	SECTION("a destination link is replaced as an entry, so its own time counts")
+	{
+		writeFileWithTime(base % "/src/a.bin", 1'500'000'000);
+		writeFileWithTime(base % "/new-target.bin", 1'600'000'000);
+		createLinkWithOwnTime(base % "/new-target.bin", base % "/dest/a.bin", 1'400'000'000);
+
+		runCopy(script, { base % "/src/a.bin" }, DestinationIntent::IntoDirectory, base % "/dest");
+		CHECK(compareSides(theOnlyRow()) == SideComparison::DestinationOlder);
+	}
+
+	SECTION("a link whose target is copied compares its target's time")
+	{
+		writeFileWithTime(base % "/old-target.bin", 1'300'000'000);
+		createLinkWithOwnTime(base % "/old-target.bin", base % "/src/link.bin", 1'500'000'000);
+		writeFileWithTime(base % "/dest/link.bin", 1'400'000'000);
+
+		runCopyOfLinkTargets(script, { base % "/src/link.bin" }, DestinationIntent::IntoDirectory, base % "/dest");
+		CHECK(compareSides(theOnlyRow()) == SideComparison::DestinationNewer);
+	}
+}

@@ -18,8 +18,8 @@ directory scanning, folder comparison, and the platform shell's own file operati
   make writable, cancel. Replace, merge, skip and make writable can apply to all remaining matching cases.
 - Progress in bytes for transfers and in items for delete, with speed and time remaining. Totals become exact once the
   source trees are scanned.
-- Links are entries of their own: delete and same-volume move act on the link, copy brings over what it points to,
-  link cycles end, and nothing reached through a directory link is ever deleted.
+- Links are entries of their own: delete and move act on the link, copy recreates it storing the same target or on
+  request brings over what it points to, link cycles end, and nothing reached through a directory link is ever deleted.
 - Handles awkward input: unusual names, paths beyond Windows' `MAX_PATH`, FAT32 and exFAT volumes, case-only
   renames. A destination inside its own source is refused, judged by filesystem identity, not spelling.
 - Requests are built from raw path text (`makeTransferRequest`, `makePermanentDeleteRequest`), validated once.

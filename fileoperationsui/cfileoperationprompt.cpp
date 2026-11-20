@@ -35,6 +35,7 @@ QString buttonName(const DecisionAction action)
 	case Rename: return QStringLiteral("btnRename");
 	case Retry: return QStringLiteral("btnRetry");
 	case Cancel: return QStringLiteral("btnCancel");
+	case CopyLinkTargets: return QStringLiteral("btnCopyLinkTargets");
 	}
 	return {};
 }

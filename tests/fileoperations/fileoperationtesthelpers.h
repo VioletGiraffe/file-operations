@@ -29,6 +29,7 @@ RESTORE_COMPILER_WARNINGS
 #ifdef _WIN32
 #include <Windows.h>
 #else
+#include <errno.h>
 #include <unistd.h>
 #endif
 
@@ -105,9 +106,10 @@ inline constexpr uint64_t defaultTransferChunkSize = 64 * 1024;
 // One synchronous run of an operation, with the request validated on the way in. A case that has to interleave with
 // an operation already in flight builds the executor itself: releasing a barrier takes a second thread.
 inline OperationSummary runTransfer(OperationScript& script, const TransferKind kind, const QStringList& sources,
-	const DestinationIntent intent, const QString& destination, const uint64_t chunkSize = defaultTransferChunkSize)
+	const DestinationIntent intent, const QString& destination, const uint64_t chunkSize = defaultTransferChunkSize,
+	const LinkTransferMode linkMode = LinkTransferMode::CopyLinks)
 {
-	const auto request = makeTransferRequest(kind, sources, intent, destination);
+	const auto request = makeTransferRequest(kind, sources, intent, destination, linkMode);
 	REQUIRE(request.has_value());
 	auto context = makeScriptedContext(script, PrimaryProgressUnit::Bytes);
 	CTransferExecutor executor{ context, chunkSize };
@@ -118,6 +120,11 @@ inline OperationSummary runCopy(OperationScript& script, const QStringList& sour
 	const QString& destination, const uint64_t chunkSize = defaultTransferChunkSize)
 {
 	return runTransfer(script, TransferKind::Copy, sources, intent, destination, chunkSize);
+}
+
+inline OperationSummary runCopyOfLinkTargets(OperationScript& script, const QStringList& sources, const DestinationIntent intent, const QString& destination)
+{
+	return runTransfer(script, TransferKind::Copy, sources, intent, destination, defaultTransferChunkSize, LinkTransferMode::CopyTargets);
 }
 
 inline OperationSummary runMove(OperationScript& script, const QStringList& sources, const DestinationIntent intent,
@@ -233,12 +240,12 @@ inline int stagingFileCount(const QString& directory)
 		QDir::Files | QDir::Hidden | QDir::System).size());
 }
 
-inline bool setEntryTimes(const QString& path, const thin_io::entry_times& times)
+inline bool setEntryTimes(const QString& path, const thin_io::entry_times& times, const thin_io::link_behavior linkBehavior = thin_io::link_behavior::follow)
 {
 #ifdef _WIN32
-	return thin_io::set_times(path.toStdWString().c_str(), times);
+	return thin_io::set_times(path.toStdWString().c_str(), times, linkBehavior);
 #else
-	return thin_io::set_times(QFile::encodeName(path).constData(), times);
+	return thin_io::set_times(QFile::encodeName(path).constData(), times, linkBehavior);
 #endif
 }
 
@@ -336,6 +343,31 @@ inline bool symlinkCreationUnavailable(const QString& writableDirectory)
 	WARN("Symbolic links cannot be created here: symlink sections skipped");
 	return true;
 }
+
+inline thin_io::entry_times linkOwnTimes(const QString& path)
+{
+#ifdef _WIN32
+	const auto status = thin_io::get_entry_status(path.toStdWString().c_str(), thin_io::link_behavior::do_not_follow);
+#else
+	const auto status = thin_io::get_entry_status(QFile::encodeName(path).constData(), thin_io::link_behavior::do_not_follow);
+#endif
+	REQUIRE(status.has_value());
+	return status->times;
+}
+
+inline thin_io::link_definition linkDefinitionOf(const QString& path)
+{
+	auto definition = readLinkDefinition(ep(path));
+	REQUIRE(definition.has_value());
+	return std::move(*definition);
+}
+
+// A native link-creation failure that means the filesystem holds no links, for a forced Point::CreateLink_Native.
+#ifdef _WIN32
+inline constexpr thin_io::filesystem_error_code linksUnsupportedCode = ERROR_INVALID_FUNCTION;
+#else
+inline constexpr thin_io::filesystem_error_code linksUnsupportedCode = EPERM;
+#endif
 
 inline int64_t entryLastWriteSeconds(const QString& path)
 {

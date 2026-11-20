@@ -13,15 +13,25 @@ enum class SourceOwnership : uint8_t
 	BorrowedThroughDirectoryLink // Reached via a directory link: materialized at the destination, never removed by move cleanup
 };
 
-// One node of the immutable source manifest. Planning and presentation data only, never permission to
-// assume the filesystem is unchanged: every mutation revalidates what it needs immediately before acting.
+// What a transfer does with a link node.
+enum class LinkTreatment : uint8_t
+{
+	None,        // Not a link, or a permanent-delete manifest
+	Recreate,    // A link storing the same target; no bytes and no children
+	Materialize, // What it points to: a file link's bytes, or a directory link's content as its children
+	Skip         // Left at the source: the destination cannot hold it, and the user chose to skip such links
+};
+
+// One node of the source manifest. Planning and presentation data only, never permission to assume the
+// filesystem is unchanged: every mutation revalidates what it needs immediately before acting.
 struct SourceNode
 {
 	EntrySnapshot entry;
 	std::vector<SourceNode> children;
-	uint64_t subtreeBytes = 0; // entry.size plus all descendants
+	uint64_t subtreeBytes = 0; // The bytes the transfer streams for this node plus all descendants
 	size_t subtreeItems = 0;   // This node plus all descendants
 	SourceOwnership ownership = SourceOwnership::Owned;
+	LinkTreatment linkTreatment = LinkTreatment::None;
 };
 
 // The manifest is O(number of entries), so per-node size multiplies into every large tree. Accidental
@@ -33,9 +43,12 @@ static_assert(sizeof(void*) != 8 || sizeof(SourceNode) == sizeof(EntrySnapshot) 
 // Tree construction is operation-specific.
 enum class SourceTreeBuildMode
 {
-	MaterializingTransfer, // Copy / copy-based move: directory links are traversed (their content borrowed), file links carry followed target sizes
-	PermanentDelete        // Links of both kinds are leaf entries; nothing is ever followed
+	MaterializingTransfer,  // Copy / copy-based move: directory links are traversed (their content borrowed), file links carry followed target sizes
+	LinkPreservingTransfer, // Copy / move that recreates links: every link is a leaf of no bytes, whatever it points to
+	PermanentDelete         // Links of both kinds are leaf entries; nothing is ever followed
 };
+
+[[nodiscard]] SourceTreeBuildMode transferBuildMode(LinkTransferMode linkMode) noexcept;
 
 struct ScanCancelled {};
 

@@ -3,6 +3,7 @@
 #include "cfilesystemmutator.h"
 #include "coperationexecutioncontext.h"
 #include "cstagedfilecopy.h"
+#include "linkcopy.h"
 
 
 // Submodule includes
@@ -88,17 +89,40 @@ bool isDirectoryLike(const OperationEntryKind kind) noexcept
 	return kind == OperationEntryKind::Directory || kind == OperationEntryKind::DirectoryLink;
 }
 
-bool isFileLike(const OperationEntryKind kind) noexcept
+bool transfersAsDirectory(const SourceNode& node) noexcept
 {
-	return kind == OperationEntryKind::RegularFile || kind == OperationEntryKind::FileLink;
+	return node.entry.kind == OperationEntryKind::Directory
+		|| (node.entry.kind == OperationEntryKind::DirectoryLink && node.linkTreatment == LinkTreatment::Materialize);
 }
 
-SourceNode singleEntryManifest(EntrySnapshot entry)
+// A file, a materialized file link, or a link recreated as itself.
+bool transfersAsOneEntry(const SourceNode& node) noexcept
 {
-	SourceNode leaf{ .entry = mv(entry) };
-	leaf.subtreeBytes = leaf.entry.size;
-	leaf.subtreeItems = 1;
-	return leaf;
+	return node.entry.kind == OperationEntryKind::RegularFile || node.linkTreatment == LinkTreatment::Recreate
+		|| (node.entry.kind == OperationEntryKind::FileLink && node.linkTreatment == LinkTreatment::Materialize);
+}
+
+// The folder a root's links would be created in, or where it does not exist yet, its nearest existing ancestor.
+CEntryPath nearestExistingFolder(const CEntryPath& proposedDestination)
+{
+	CEntryPath folder = proposedDestination.isRoot() ? proposedDestination : proposedDestination.parent();
+	for (;;)
+	{
+		if (const auto entry = inspectEntry(folder); entry && entry->has_value() && isDirectoryLike((**entry).kind))
+			return folder;
+		if (folder.isRoot())
+			return folder;
+		folder = folder.parent();
+	}
+}
+
+template <typename Visitor>
+void forEachRecreatedLink(SourceNode& node, const Visitor& visit)
+{
+	if (node.linkTreatment == LinkTreatment::Recreate)
+		visit(node);
+	for (SourceNode& child : node.children)
+		forEachRecreatedLink(child, visit);
 }
 
 bool hasRenameAnswer(const ConflictPlan& plan)
@@ -122,7 +146,9 @@ CTransferExecutor::CTransferExecutor(COperationExecutionContext& context, const 
 
 OperationSummary CTransferExecutor::run(const TransferRequest& request)
 {
+	assert_r(request.kind == TransferKind::Copy || request.linkMode == LinkTransferMode::CopyLinks);
 	_requestKind = request.kind;
+	_linkMode = request.linkMode;
 	_destinationAncestorIdentities = destinationAncestorIdentities(request.destination);
 
 	std::vector<PlannedRoot> roots;
@@ -144,7 +170,7 @@ OperationSummary CTransferExecutor::run(const TransferRequest& request)
 		rootsMovedByRename += outcome == NodeOutcome::Completed ? 1 : 0;
 	}
 
-	if (!resolveConflictPlan(roots))
+	if (!settleUncreatableLinks(roots) || !resolveConflictPlan(roots))
 		return _context.makeSummary(CompletionStatus::Cancelled);
 
 	uint64_t totalBytes = 0;
@@ -175,7 +201,7 @@ std::variant<CTransferExecutor::PlannedRoot, NodeOutcome> CTransferExecutor::pla
 	if (!_context.checkpoint())
 		return NodeOutcome::Cancelled;
 
-	auto rootEntry = inspectSourceRoot(intent.source);
+	auto rootEntry = inspectSourceRoot(intent.source, _linkMode);
 	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&rootEntry))
 		return *endedOutcome;
 	EntrySnapshot& root = std::get<EntrySnapshot>(rootEntry);
@@ -205,13 +231,120 @@ std::variant<CTransferExecutor::PlannedRoot, NodeOutcome> CTransferExecutor::pla
 		}
 	}
 
-	if (!isDirectoryLike(root.kind))
-		return PlannedRoot{ intent, singleEntryManifest(mv(root)), knownCrossDevice, predictedCrossDevice };
-
-	auto built = buildManifestWithRetry(root);
+	auto built = buildManifestWithRetry(root, transferBuildMode(_linkMode));
 	if (const auto* endedOutcome = std::get_if<NodeOutcome>(&built))
 		return *endedOutcome;
 	return PlannedRoot{ intent, mv(std::get<SourceNode>(built)), knownCrossDevice, predictedCrossDevice };
+}
+
+bool CTransferExecutor::settleUncreatableLinks(std::vector<PlannedRoot>& roots)
+{
+	struct UncreatableLink
+	{
+		SourceNode* node;
+		size_t rootIndex;
+		FailureDetails reason;
+	};
+	std::vector<UncreatableLink> uncreatableLinks;
+
+	struct ProbeResult
+	{
+		CEntryPath folder;
+		thin_io::link_type type;
+		std::optional<FailureDetails> unsupported;
+	};
+	std::vector<ProbeResult> probes; // Typically one folder and one or two link types
+
+	for (size_t rootIndex = 0; rootIndex < roots.size(); ++rootIndex)
+	{
+		PlannedRoot& root = roots[rootIndex];
+		// A move renames its links on one volume, which creates nothing
+		if (_requestKind == TransferKind::Move && !root.knownCrossDevice && !root.crossDevicePredicted)
+			continue;
+
+		std::optional<CEntryPath> folder; // Found once the root turns out to hold a link
+		forEachRecreatedLink(root.tree, [&](SourceNode& link) {
+			const auto definition = readLinkDefinition(link.entry.path);
+			if (!definition)
+			{
+				// Any other failure is reported when the link is copied
+				if (definition.error().category == FileErrorCategory::Unsupported)
+					uncreatableLinks.push_back({ &link, rootIndex, FailureDetails{ FailedAction::ReadLink, link.entry.path, definition.error() } });
+				return;
+			}
+
+			if (!folder)
+				folder = nearestExistingFolder(root.intent.proposedDestination);
+			auto probe = std::ranges::find_if(probes, [&](const ProbeResult& result) { return result.folder == *folder && result.type == definition->type; });
+			if (probe == probes.end())
+			{
+				ProbeResult result{ *folder, definition->type, {} };
+				if (auto probed = probeLinkCreation(*folder, definition->type); !probed)
+				{
+					if (probed.error().action == FailedAction::CleanupStaging)
+						_context.recordWarning(OperationDiagnostic{ mv(probed.error()), link.entry, {} });
+					// Any other failure is not proof that no link can be created: copying the link reports it
+					else if (probed.error().filesystemError.category == FileErrorCategory::Unsupported)
+						result.unsupported = mv(probed.error());
+				}
+				probes.push_back(mv(result));
+				probe = probes.end() - 1;
+			}
+			if (probe->unsupported)
+				uncreatableLinks.push_back({ &link, rootIndex, *probe->unsupported });
+		});
+	}
+
+	if (uncreatableLinks.empty())
+		return true;
+
+	const UncreatableLink& first = uncreatableLinks.front();
+	const auto decision = _context.resolveDecision(OperationIssue{ IssueKind::LinksUnsupported, first.node->entry, {}, first.reason });
+	if (!decision || decision->action == DecisionAction::Cancel)
+		return false;
+
+	if (decision->action == DecisionAction::Skip)
+	{
+		// A skipped link counts as the recreated link it replaces: no bytes, one item
+		for (const UncreatableLink& link : uncreatableLinks)
+			link.node->linkTreatment = LinkTreatment::Skip;
+		return true;
+	}
+
+	assert_debug_only(decision->action == DecisionAction::CopyLinkTargets);
+	// A whole root is scanned again, so a directory link's cycle check sees the link's own ancestors.
+	// Every link of such a root is then copied as what it points to, those the destination could hold included.
+	std::vector<bool> rescanRoot(roots.size(), false);
+	for (const UncreatableLink& link : uncreatableLinks)
+		rescanRoot[link.rootIndex] = true;
+
+	std::vector<PlannedRoot> settledRoots;
+	settledRoots.reserve(roots.size());
+	for (size_t rootIndex = 0; rootIndex < roots.size(); ++rootIndex)
+	{
+		PlannedRoot& root = roots[rootIndex];
+		if (!rescanRoot[rootIndex])
+		{
+			settledRoots.push_back(mv(root));
+			continue;
+		}
+
+		const auto rootEntry = inspectSourceRoot(root.intent.source, LinkTransferMode::CopyTargets);
+		auto built = std::holds_alternative<NodeOutcome>(rootEntry)
+			? std::variant<SourceNode, NodeOutcome>{ std::get<NodeOutcome>(rootEntry) }
+			: buildManifestWithRetry(std::get<EntrySnapshot>(rootEntry), SourceTreeBuildMode::MaterializingTransfer);
+
+		if (auto* tree = std::get_if<SourceNode>(&built))
+		{
+			root.tree = mv(*tree);
+			settledRoots.push_back(mv(root));
+		}
+		else if (finishUnscannedRoot(std::get<NodeOutcome>(built)) == NodeOutcome::Cancelled)
+			return false;
+	}
+
+	roots = mv(settledRoots);
+	return true;
 }
 
 bool CTransferExecutor::resolveConflictPlan(const std::vector<PlannedRoot>& roots)
@@ -268,6 +401,9 @@ bool CTransferExecutor::planSubtree(const SourceNode& node, const CEntryPath& pr
 		return false;
 	publishPlanningProgress(node.entry.path);
 
+	if (node.linkTreatment == LinkTreatment::Skip)
+		return true; // settleUncreatableLinks already asked
+
 	if (node.entry.kind == OperationEntryKind::Other)
 	{
 		// A copy never streams it. A move renames it where the destination is free on the same volume; everywhere
@@ -289,9 +425,12 @@ bool CTransferExecutor::planSubtree(const SourceNode& node, const CEntryPath& pr
 	DestinationChoice choice = UseDestination{ proposedDestination, ReplacementMode::RequireAbsent };
 	if (destinationMayExist)
 	{
-		choice = isFileLike(node.entry.kind)
-			? resolveFileDestination(_context, node.entry, proposedDestination)
-			: resolveDirectoryDestination(_context, node.entry, proposedDestination, position);
+		if (node.linkTreatment == LinkTreatment::Recreate)
+			choice = resolveLinkDestination(_context, node.entry, proposedDestination);
+		else if (transfersAsOneEntry(node))
+			choice = resolveFileDestination(_context, node.entry, proposedDestination);
+		else
+			choice = resolveDirectoryDestination(_context, node.entry, proposedDestination, position);
 	}
 	if (std::holds_alternative<CancelOperation>(choice))
 		return false;
@@ -315,7 +454,7 @@ bool CTransferExecutor::planSubtree(const SourceNode& node, const CEntryPath& pr
 	if (const auto refusedRename = siblingClaims.claim(node.entry.path, finalDestination.name()))
 		_context.flagRenameTargetTaken(*refusedRename);
 
-	if (!isDirectoryLike(node.entry.kind))
+	if (transfersAsOneEntry(node))
 		return true;
 
 	CNameClaims childClaims;
@@ -336,11 +475,11 @@ void CTransferExecutor::publishPlanningProgress(const CEntryPath& currentEntry)
 	_context.publishProgress(snapshot);
 }
 
-std::variant<EntrySnapshot, NodeOutcome> CTransferExecutor::inspectSourceRoot(const CEntryPath& source)
+std::variant<EntrySnapshot, NodeOutcome> CTransferExecutor::inspectSourceRoot(const CEntryPath& source, const LinkTransferMode linkMode)
 {
 	for (;;)
 	{
-		auto inspected = inspectEntry(source);
+		auto inspected = inspectEntry(source, linkMode);
 		if (inspected && inspected->has_value())
 			return mv(**inspected);
 
@@ -358,12 +497,12 @@ std::variant<EntrySnapshot, NodeOutcome> CTransferExecutor::inspectSourceRoot(co
 	}
 }
 
-std::variant<SourceNode, NodeOutcome> CTransferExecutor::buildManifestWithRetry(const EntrySnapshot& root)
+std::variant<SourceNode, NodeOutcome> CTransferExecutor::buildManifestWithRetry(const EntrySnapshot& root, const SourceTreeBuildMode mode)
 {
 	// The diagnostic names the entry that failed to scan, not necessarily the root.
 	for (;;)
 	{
-		auto built = buildSourceTree(_context, root, SourceTreeBuildMode::MaterializingTransfer);
+		auto built = buildSourceTree(_context, root, mode);
 		if (auto* node = std::get_if<SourceNode>(&built))
 			return mv(*node);
 		if (std::holds_alternative<ScanCancelled>(built))
@@ -470,7 +609,7 @@ NodeOutcome CTransferExecutor::copyRoot(const PlannedRoot& root)
 {
 	const SourceNode& tree = root.tree;
 	const CEntryPath& proposedDestination = root.intent.proposedDestination;
-	if (isDirectoryLike(tree.entry.kind))
+	if (transfersAsDirectory(tree))
 	{
 		if (!_context.checkpoint())
 			return NodeOutcome::Cancelled;
@@ -478,12 +617,12 @@ NodeOutcome CTransferExecutor::copyRoot(const PlannedRoot& root)
 			resolveDirectoryDestination(_context, tree.entry, proposedDestination, TransferNodePosition::SelectedRoot), false);
 	}
 
-	if (isFileLike(tree.entry.kind))
+	if (transfersAsOneEntry(tree))
 	{
 		if (const auto outcome = ensureDestinationParentExistsWithPolicy(tree.entry, proposedDestination))
 			return finishUnscannedRoot(*outcome);
 	}
-	// Other and file kinds route through the ordinary node dispatch.
+	// Single entries, skipped links and Other route through the ordinary node dispatch.
 	return copyNode(tree, proposedDestination, TransferNodePosition::SelectedRoot);
 }
 
@@ -491,6 +630,12 @@ NodeOutcome CTransferExecutor::copyNode(const SourceNode& node, CEntryPath propo
 {
 	if (!_context.checkpoint())
 		return NodeOutcome::Cancelled;
+
+	if (node.linkTreatment == LinkTreatment::Skip)
+	{
+		accountSkippedSubtree(node);
+		return NodeOutcome::Skipped;
+	}
 
 	if (node.entry.kind == OperationEntryKind::Other)
 	{
@@ -503,32 +648,9 @@ NodeOutcome CTransferExecutor::copyNode(const SourceNode& node, CEntryPath propo
 		return NodeOutcome::Skipped;
 	}
 
-	const bool fileLike = node.entry.kind == OperationEntryKind::RegularFile || node.entry.kind == OperationEntryKind::FileLink;
-	if (!fileLike)
+	if (transfersAsDirectory(node))
 		return runDirectoryNode(node, position, resolveDirectoryDestination(_context, node.entry, mv(proposedDestination), position), false);
-
-	for (;;)
-	{
-		DestinationChoice choice = resolveFileDestination(_context, node.entry, mv(proposedDestination));
-		if (std::holds_alternative<SkipNode>(choice))
-		{
-			accountSkippedSubtree(node);
-			return NodeOutcome::Skipped;
-		}
-		if (std::holds_alternative<CancelOperation>(choice))
-			return NodeOutcome::Cancelled;
-		if (std::holds_alternative<AlreadySatisfied>(choice))
-		{
-			accountAlreadySatisfiedSubtree(node);
-			return NodeOutcome::AlreadySatisfied;
-		}
-
-		auto& use = std::get<UseDestination>(choice); // MergeDirectory cannot come from the file resolver
-		const auto outcome = stagedFileTransferWithPolicy(node.entry, use.path, use.replacement, PublishedSourceAction::RetainSource, false);
-		if (outcome)
-			return *outcome;
-		proposedDestination = mv(use.path); // A new collision appeared at publication: resolve it freshly
-	}
+	return transferLeafNode(node, mv(proposedDestination), false);
 }
 
 NodeOutcome CTransferExecutor::runDirectoryNode(const SourceNode& node, const TransferNodePosition position, DestinationChoice choice, const bool knownCrossDevice)
@@ -627,7 +749,7 @@ NodeOutcome CTransferExecutor::moveRoot(const PlannedRoot& root)
 {
 	const SourceNode& tree = root.tree;
 	bool knownCrossDevice = root.knownCrossDevice;
-	if (!isDirectoryLike(tree.entry.kind))
+	if (!transfersAsDirectory(tree))
 		return moveNode(tree, root.intent.proposedDestination, TransferNodePosition::SelectedRoot, knownCrossDevice);
 
 	// Planning already tried the whole-root rename. A rename decision loops back so the respelled target gets its own attempt.
@@ -668,6 +790,13 @@ NodeOutcome CTransferExecutor::moveNode(const SourceNode& node, CEntryPath propo
 	if (!_context.checkpoint())
 		return NodeOutcome::Cancelled;
 
+	// Also where a rename could move it after all: the user chose to leave such links behind
+	if (node.linkTreatment == LinkTreatment::Skip)
+	{
+		accountSkippedSubtree(node);
+		return NodeOutcome::Skipped;
+	}
+
 	const bool owned = node.ownership == SourceOwnership::Owned;
 
 	if (owned && !knownCrossDevice)
@@ -697,16 +826,15 @@ NodeOutcome CTransferExecutor::moveNode(const SourceNode& node, CEntryPath propo
 		return NodeOutcome::Skipped;
 	}
 
-	const bool fileLike = node.entry.kind == OperationEntryKind::RegularFile || node.entry.kind == OperationEntryKind::FileLink;
-	if (!fileLike)
+	if (transfersAsDirectory(node))
 		return runDirectoryNode(node, position, resolveDirectoryDestination(_context, node.entry, mv(proposedDestination), position), knownCrossDevice);
-
-	return moveFileNode(node, mv(proposedDestination), knownCrossDevice);
+	return transferLeafNode(node, mv(proposedDestination), knownCrossDevice);
 }
 
-NodeOutcome CTransferExecutor::moveFileNode(const SourceNode& node, CEntryPath proposedDestination, bool knownCrossDevice)
+NodeOutcome CTransferExecutor::transferLeafNode(const SourceNode& node, CEntryPath proposedDestination, bool knownCrossDevice)
 {
-	const bool owned = node.ownership == SourceOwnership::Owned;
+	const bool removesOwnedSource = _requestKind == TransferKind::Move && node.ownership == SourceOwnership::Owned;
+	const bool recreatedLink = node.linkTreatment == LinkTreatment::Recreate;
 	std::optional<bool> makeWritableAuthorized; // The pre-publication read-only policy answer, resolved once per node
 
 	for (;;)
@@ -714,7 +842,9 @@ NodeOutcome CTransferExecutor::moveFileNode(const SourceNode& node, CEntryPath p
 		if (!_context.checkpoint())
 			return NodeOutcome::Cancelled;
 
-		DestinationChoice choice = resolveFileDestination(_context, node.entry, mv(proposedDestination));
+		DestinationChoice choice = recreatedLink
+			? resolveLinkDestination(_context, node.entry, mv(proposedDestination))
+			: resolveFileDestination(_context, node.entry, mv(proposedDestination));
 		if (std::holds_alternative<SkipNode>(choice))
 		{
 			accountSkippedSubtree(node);
@@ -729,9 +859,9 @@ NodeOutcome CTransferExecutor::moveFileNode(const SourceNode& node, CEntryPath p
 			return NodeOutcome::AlreadySatisfied;
 		}
 
-		auto& use = std::get<UseDestination>(choice); // MergeDirectory cannot come from the file resolver
+		auto& use = std::get<UseDestination>(choice); // MergeDirectory cannot come from the file or link resolver
 
-		if (owned && !knownCrossDevice)
+		if (removesOwnedSource && !knownCrossDevice)
 		{
 			// The resolved disposition can still be one atomic native rename: an authorized replacement,
 			// or a respelled target from a Rename decision.
@@ -753,7 +883,7 @@ NodeOutcome CTransferExecutor::moveFileNode(const SourceNode& node, CEntryPath p
 			}
 		}
 
-		if (owned && node.entry.kind == OperationEntryKind::RegularFile && !makeWritableAuthorized.has_value())
+		if (removesOwnedSource && node.entry.kind == OperationEntryKind::RegularFile && !makeWritableAuthorized.has_value())
 		{
 			auto preflight = resolveMoveReadOnlyPreflight(node.entry);
 			if (const auto* outcome = std::get_if<NodeOutcome>(&preflight))
@@ -765,8 +895,10 @@ NodeOutcome CTransferExecutor::moveFileNode(const SourceNode& node, CEntryPath p
 			makeWritableAuthorized = std::get<bool>(preflight);
 		}
 
-		const auto sourceAction = owned ? PublishedSourceAction::RemoveOwnedSource : PublishedSourceAction::RetainSource;
-		const auto outcome = stagedFileTransferWithPolicy(node.entry, use.path, use.replacement, sourceAction, makeWritableAuthorized.value_or(false));
+		const auto sourceAction = removesOwnedSource ? PublishedSourceAction::RemoveOwnedSource : PublishedSourceAction::RetainSource;
+		const auto outcome = recreatedLink
+			? linkCopyWithPolicy(node.entry, use.path, use.replacement, sourceAction)
+			: stagedFileTransferWithPolicy(node.entry, use.path, use.replacement, sourceAction, makeWritableAuthorized.value_or(false));
 		if (outcome)
 			return *outcome;
 		proposedDestination = mv(use.path); // A new collision appeared at publication: resolve it freshly
@@ -940,11 +1072,7 @@ NodeOutcome CTransferExecutor::removePublishedSourceWithPolicy(const EntrySnapsh
 		assert_debug_only(decision->action == DecisionAction::Retry);
 	}
 
-	_context.addCompletedItems(1); // Moved: required source removal is done
-	_context.progress().itemCompleted();
-	_context.progress().clearCurrentEntry();
-	_context.publishProgressSnapshot();
-	return NodeOutcome::Completed;
+	return completeCurrentEntry(); // Moved: required source removal is done
 }
 
 NodeOutcome CTransferExecutor::recordTerminalCleanupFailure(const EntrySnapshot& entry, const CEntryPath& destination,
@@ -1057,12 +1185,7 @@ std::optional<NodeOutcome> CTransferExecutor::stagedFileTransferWithPolicy(const
 			// Publication is the move's commit point: from here the committed cleanup segment runs to its end.
 			if (sourceAction == PublishedSourceAction::RemoveOwnedSource)
 				return removePublishedSourceWithPolicy(source, destination, makeWritableAuthorized);
-
-			_context.addCompletedItems(1);
-			_context.progress().itemCompleted();
-			_context.progress().clearCurrentEntry();
-			_context.publishProgressSnapshot();
-			return NodeOutcome::Completed;
+			return completeCurrentEntry();
 		}
 
 		_context.progress().currentEntryAbandoned();
@@ -1073,14 +1196,51 @@ std::optional<NodeOutcome> CTransferExecutor::stagedFileTransferWithPolicy(const
 		if (!decision || decision->action == DecisionAction::Cancel)
 			return NodeOutcome::Cancelled;
 		if (decision->action == DecisionAction::Skip)
-		{
-			_context.addSkippedItems(1);
-			_context.progress().advanceWithoutTransfer(source.size, 1);
-			_context.progress().clearCurrentEntry();
-			_context.publishProgressSnapshot();
-			return NodeOutcome::Skipped;
-		}
+			return skipCurrentEntry(source.size);
 		assert_debug_only(decision->action == DecisionAction::Retry); // A new staging session, from the top
+	}
+}
+
+std::optional<NodeOutcome> CTransferExecutor::linkCopyWithPolicy(const EntrySnapshot& source, const CEntryPath& destination,
+	const ReplacementMode replacement, const PublishedSourceAction sourceAction)
+{
+	for (;;)
+	{
+		if (!_context.checkpoint())
+			return NodeOutcome::Cancelled;
+
+		_context.progress().setCurrentEntry(source.path, uint64_t{ 0 });
+		_context.publishProgressSnapshot();
+
+		auto copied = copyLinkAsItself(source.path, destination, replacement);
+		if (copied)
+		{
+			if (copied->metadataFailure)
+				_context.recordWarning(OperationDiagnostic{ mv(*copied->metadataFailure), source, EntrySnapshot{ destination, source.kind, source.size } });
+
+			// Publication is the move's commit point, as for a staged file
+			if (sourceAction == PublishedSourceAction::RemoveOwnedSource)
+				return removePublishedSourceWithPolicy(source, destination, false);
+			return completeCurrentEntry();
+		}
+
+		LinkCopyFailure& failure = copied.error();
+		if (failure.cleanupFailure)
+			_context.recordWarning(OperationDiagnostic{ mv(*failure.cleanupFailure), source, {} });
+
+		// A publication-time AlreadyExists re-enters resolution only when fresh inspection proves the new collision
+		if (failure.primaryFailure.action == FailedAction::PublishDestination && failure.primaryFailure.filesystemError.category == FileErrorCategory::AlreadyExists)
+		{
+			if (const auto fresh = inspectEntry(destination); fresh && fresh->has_value())
+				return {};
+		}
+
+		const auto decision = _context.resolveDecision(OperationIssue{ IssueKind::ActionFailed, source, {}, mv(failure.primaryFailure) });
+		if (!decision || decision->action == DecisionAction::Cancel)
+			return NodeOutcome::Cancelled;
+		if (decision->action == DecisionAction::Skip)
+			return skipCurrentEntry(0);
+		assert_debug_only(decision->action == DecisionAction::Retry);
 	}
 }
 
@@ -1108,4 +1268,22 @@ void CTransferExecutor::accountAlreadySatisfiedSubtree(const SourceNode& node)
 	_context.addAlreadySatisfiedItems(node.subtreeItems);
 	_context.progress().advanceWithoutTransfer(node.subtreeBytes, node.subtreeItems);
 	_context.publishProgressSnapshot();
+}
+
+NodeOutcome CTransferExecutor::completeCurrentEntry()
+{
+	_context.addCompletedItems(1);
+	_context.progress().itemCompleted();
+	_context.progress().clearCurrentEntry();
+	_context.publishProgressSnapshot();
+	return NodeOutcome::Completed;
+}
+
+NodeOutcome CTransferExecutor::skipCurrentEntry(const uint64_t plannedBytes)
+{
+	_context.addSkippedItems(1);
+	_context.progress().advanceWithoutTransfer(plannedBytes, 1);
+	_context.progress().clearCurrentEntry();
+	_context.publishProgressSnapshot();
+	return NodeOutcome::Skipped;
 }

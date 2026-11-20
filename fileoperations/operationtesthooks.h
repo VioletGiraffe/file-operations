@@ -41,6 +41,9 @@ enum class Point : uint32_t
 	SetEntryWritable_Native,
 	ApplyDirectoryTimes_Native,
 	InspectEntry_Native, // inspectEntry's primary metadata query; a forced code classifies like a real failure
+	ReadLink_Native,
+	CreateLink_Native, // Also reached by the link-creation probe before a transfer's plan
+	ApplyLinkMetadata_Native,
 
 	// CStagedFileCopy lifecycle boundaries, in lifecycle order, immediately before the corresponding native call.
 	StagedCopy_CaptureMetadata_Native,

@@ -30,8 +30,15 @@ Important boundaries:
    cleanup.
 3. Staged copy publishes by rename after contents and required metadata are ready. Cancellation is honored before
    publication; publication and committed source cleanup are not interruptible.
-4. Delete and same-filesystem move act on link entries. Copy materializes link targets, detects active traversal
-   cycles, and never removes content merely borrowed through a directory link.
+4. Links:
+   - Delete and same-filesystem move act on link entries.
+   - Copy and cross-device move recreate a link as itself, storing the same target, never re-resolved.
+   - A copy with `LinkTransferMode::CopyTargets` materializes link targets instead, and so does a transfer where the
+     user chose that for links the destination cannot hold. Materialization detects active traversal cycles and never
+     removes content merely borrowed through a directory link.
+   - Before the plan, a transfer creates and removes one probe link per link type in the destination folder. The
+     links of a type that fails as unsupported, and those no link creation can recreate (such as a Windows volume
+     mount point), are one `LinksUnsupported` question: skip them, or scan their roots again following links.
 5. Manifest scanning builds the complete operation-specific tree before aggregate totals become available. Fixed
    depth and node limits bound hostile or cyclic inputs.
 6. Native error classification is conservative. Narrow a platform error only when the operation's local context
@@ -140,7 +147,7 @@ conversions themselves are thin_io's `qt_paths.hpp`.
 
 `compareFolders()` enumerates both trees, pairs entries by relative path (exactly, or folding case and Unicode
 normalization), and reads file contents only where type and size cannot already tell a pair apart. Directory links are
-followed, so a link is judged by the contents a transfer would copy. `compareFileContents()` is the byte comparison
+followed, so a link is judged by the contents it gives access to. `compareFileContents()` is the byte comparison
 underneath.
 
 ## Shell operations (`shelloperations/`)

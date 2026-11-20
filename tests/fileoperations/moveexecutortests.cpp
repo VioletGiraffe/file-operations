@@ -610,7 +610,7 @@ TEST_CASE("move executor: merge with per-child renames", "[moveexecutor]")
 	CHECK(summary.completedItems == 7); // src, shared, fresh.bin, unique subtree (2), x.bin, y.bin
 }
 
-TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexecutor][link]")
+TEST_CASE("move executor: links in the fallback", "[moveexecutor][link]")
 {
 	QTemporaryDir tempDir;
 	REQUIRE(tempDir.isValid());
@@ -618,7 +618,7 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 
 	OperationScript script;
 
-	SECTION("a directory link materializes its target; the link entry is removed, the target is not")
+	SECTION("a directory link moves as a link; its target is untouched")
 	{
 		if (linksUnsupportedByFilesystem(base))
 			return;
@@ -627,6 +627,7 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 		writeTestFile(base % "/target/t.bin", patternedContents(800));
 		REQUIRE(QDir{}.mkpath(base % "/src"));
 		REQUIRE(createDirectoryLink(base % "/target", base % "/src/dirlink"));
+		const auto definition = linkDefinitionOf(base % "/src/dirlink");
 		REQUIRE(QDir{}.mkpath(base % "/dest"));
 
 		CFaultHookScope hooks;
@@ -634,35 +635,15 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 
 		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(summary.transferredBytes == 0);
 		CHECK(entryAbsent(base % "/src")); // Including the link entry itself
-		CHECK(readFileContents(base % "/target/t.bin") == patternedContents(800)); // Borrowed source content untouched
-		CHECK(readFileContents(base % "/dest/src/dirlink/t.bin") == patternedContents(800)); // Materialized as a real directory
-		CHECK(!QFileInfo{ base % "/dest/src/dirlink" }.isSymbolicLink());
+		CHECK(readFileContents(base % "/target/t.bin") == patternedContents(800));
+		CHECK(snapshotOf(base % "/dest/src/dirlink").kind == OperationEntryKind::DirectoryLink);
+		CHECK(linkDefinitionOf(base % "/dest/src/dirlink") == definition);
 		CHECK(script.seenRequests.empty());
 	}
 
-	SECTION("a file symlink materializes its target content; the link entry is removed, the target is not")
-	{
-		if (symlinkCreationUnavailable(base))
-			return;
-
-		writeTestFile(base % "/target.bin", patternedContents(900));
-		REQUIRE(QDir{}.mkpath(base % "/src"));
-		REQUIRE(createFileSymlink(base % "/target.bin", base % "/src/link.bin"));
-		REQUIRE(QDir{}.mkpath(base % "/dest"));
-
-		CFaultHookScope hooks;
-		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
-
-		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
-		CHECK(summary.status == CompletionStatus::Completed);
-		CHECK(entryAbsent(base % "/src"));
-		CHECK(readFileContents(base % "/target.bin") == patternedContents(900));
-		CHECK(readFileContents(base % "/dest/src/link.bin") == patternedContents(900));
-		CHECK(!QFileInfo{ base % "/dest/src/link.bin" }.isSymbolicLink());
-	}
-
-	SECTION("a relative file symlink materializes the target it resolved to at the source")
+	SECTION("relative, absolute and broken file symlinks keep their stored targets")
 	{
 		if (symlinkCreationUnavailable(base))
 			return;
@@ -670,6 +651,11 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 		writeTestFile(base % "/target.bin", patternedContents(700));
 		REQUIRE(QDir{}.mkpath(base % "/src"));
 		REQUIRE(createFileSymlink(QStringLiteral("../target.bin"), base % "/src/rel.bin"));
+		REQUIRE(createFileSymlink(base % "/target.bin", base % "/src/abs.bin"));
+		REQUIRE(createFileSymlink(base % "/src/no-such-target", base % "/src/broken.bin"));
+		const auto relative = linkDefinitionOf(base % "/src/rel.bin");
+		const auto absolute = linkDefinitionOf(base % "/src/abs.bin");
+		const auto broken = linkDefinitionOf(base % "/src/broken.bin");
 		REQUIRE(QDir{}.mkpath(base % "/dest"));
 
 		CFaultHookScope hooks;
@@ -677,27 +663,86 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 
 		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
 		CHECK(summary.status == CompletionStatus::Completed);
-
-		// "../target.bin" names nothing from dest/src: what lands there is real content because the link was
-		// resolved where it lived, not where it landed.
-		CHECK(snapshotOf(base % "/dest/src/rel.bin").kind == OperationEntryKind::RegularFile);
-		CHECK(readFileContents(base % "/dest/src/rel.bin") == patternedContents(700));
+		CHECK(summary.completedItems == 4);
+		CHECK(script.seenRequests.empty());
 		CHECK(entryAbsent(base % "/src"));
 		CHECK(readFileContents(base % "/target.bin") == patternedContents(700));
+
+		// "../target.bin" now names dest/target.bin, which does not exist: the stored target is copied, never re-resolved
+		CHECK(linkDefinitionOf(base % "/dest/src/rel.bin") == relative);
+		CHECK(linkDefinitionOf(base % "/dest/src/abs.bin") == absolute);
+		CHECK(readFileContents(base % "/dest/src/abs.bin") == patternedContents(700));
+		CHECK(linkDefinitionOf(base % "/dest/src/broken.bin") == broken);
 	}
 
-	SECTION("a broken link cannot materialize: skipping it retains it and its ancestors")
+	SECTION("a link to its own ancestor moves as a link, never followed")
 	{
-		if (symlinkCreationUnavailable(base))
+		if (linksUnsupportedByFilesystem(base))
 			return;
 
 		REQUIRE(QDir{}.mkpath(base % "/src/sub"));
-		REQUIRE(createFileSymlink(base % "/src/sub/no-such-target", base % "/src/sub/broken"));
+		writeTestFile(base % "/src/f.bin", patternedContents(100));
+		REQUIRE(createDirectoryLink(base % "/src", base % "/src/sub/uplink"));
+		const auto definition = linkDefinitionOf(base % "/src/sub/uplink");
+		REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
+
+		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+		CHECK(summary.status == CompletionStatus::Completed);
+		CHECK(entryAbsent(base % "/src"));
+		CHECK(linkDefinitionOf(base % "/dest/src/sub/uplink") == definition); // Names the source path the tree left behind
+		CHECK(readFileContents(base % "/dest/src/f.bin") == patternedContents(100));
+	}
+
+	SECTION("where the destination cannot hold links, copying what they point to materializes them and removes the link entries")
+	{
+		if (linksUnsupportedByFilesystem(base))
+			return;
+
+		REQUIRE(QDir{}.mkpath(base % "/target"));
+		writeTestFile(base % "/target/t.bin", patternedContents(800));
+		REQUIRE(QDir{}.mkpath(base % "/src/sub"));
+		writeTestFile(base % "/src/f.bin", patternedContents(100));
+		REQUIRE(createDirectoryLink(base % "/target", base % "/src/dirlink"));
+		REQUIRE(createDirectoryLink(base % "/src", base % "/src/sub/uplink"));
+		REQUIRE(QDir{}.mkpath(base % "/dest"));
+
+		CFaultHookScope hooks;
+		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
+		hooks.forceNativeError(Point::CreateLink_Native, linksUnsupportedCode); // The probe
+
+		script.decisions = { act(DecisionAction::CopyLinkTargets) };
+		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
+
+		CHECK(summary.status == CompletionStatus::Completed);
+		REQUIRE(script.seenRequests.size() == 1);
+		CHECK(script.seenRequests[0].issue.kind == IssueKind::LinksUnsupported);
+		CHECK(entryAbsent(base % "/src")); // Including the link entries themselves
+		CHECK(readFileContents(base % "/target/t.bin") == patternedContents(800)); // Borrowed source content untouched
+		CHECK(snapshotOf(base % "/dest/src/dirlink").kind == OperationEntryKind::Directory);
+		CHECK(readFileContents(base % "/dest/src/dirlink/t.bin") == patternedContents(800));
+		// The cycle ends where the link would enter its own ancestor again: an empty real directory
+		CHECK(snapshotOf(base % "/dest/src/sub/uplink").kind == OperationEntryKind::Directory);
+		CHECK(QDir{ base % "/dest/src/sub/uplink" }.isEmpty());
+		CHECK(readFileContents(base % "/dest/src/f.bin") == patternedContents(100));
+	}
+
+	SECTION("where the destination cannot hold links, skipping them retains them and their ancestors")
+	{
+		if (linksUnsupportedByFilesystem(base))
+			return;
+
+		REQUIRE(QDir{}.mkpath(base % "/target"));
+		REQUIRE(QDir{}.mkpath(base % "/src/sub"));
+		REQUIRE(createDirectoryLink(base % "/target", base % "/src/sub/dirlink"));
 		writeTestFile(base % "/src/moved.bin", patternedContents(100));
 		REQUIRE(QDir{}.mkpath(base % "/dest"));
 
 		CFaultHookScope hooks;
 		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
+		hooks.forceNativeError(Point::CreateLink_Native, linksUnsupportedCode); // The probe
 
 		script.decisions = { act(DecisionAction::Skip) };
 		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
@@ -710,29 +755,9 @@ TEST_CASE("move executor: links and borrowed content in the fallback", "[moveexe
 		CHECK(script.progress.back().itemsProcessed == 4);
 		CHECK(readFileContents(base % "/dest/src/moved.bin") == patternedContents(100));
 		CHECK(entryAbsent(base % "/src/moved.bin"));
+		CHECK(!entryAbsent(base % "/src/sub/dirlink"));
 		CHECK(!entryAbsent(base % "/src/sub")); // The skipped link's ancestors are preserved
 		CHECK(!entryAbsent(base % "/src"));
-	}
-
-	SECTION("a cycle-terminated directory link becomes an empty real directory")
-	{
-		if (linksUnsupportedByFilesystem(base))
-			return;
-
-		REQUIRE(QDir{}.mkpath(base % "/src/sub"));
-		writeTestFile(base % "/src/f.bin", patternedContents(100));
-		REQUIRE(createDirectoryLink(base % "/src", base % "/src/sub/uplink"));
-		REQUIRE(QDir{}.mkpath(base % "/dest"));
-
-		CFaultHookScope hooks;
-		hooks.forceNativeError(Point::RenameEntry_Native, crossDeviceCode);
-
-		const auto summary = runMove(script, { base % "/src" }, DestinationIntent::IntoDirectory, base % "/dest");
-		CHECK(summary.status == CompletionStatus::Completed);
-		CHECK(entryAbsent(base % "/src"));
-		CHECK(QFileInfo{ base % "/dest/src/sub/uplink" }.isDir());
-		CHECK(QDir{ base % "/dest/src/sub/uplink" }.isEmpty());
-		CHECK(readFileContents(base % "/dest/src/f.bin") == patternedContents(100));
 	}
 
 #ifndef _WIN32
@@ -1304,13 +1329,11 @@ TEST_CASE("move executor: a file link skips the read-only preflight", "[moveexec
 	CHECK(script.seenRequests.empty()); // The read-only policy question applies to regular files only
 
 	CHECK(entryAbsent(base % "/link.bin")); // The link entry moved...
-	CHECK(readFileContents(base % "/dest/link.bin") == patternedContents(300)); // ...as materialized target content
+	CHECK(snapshotOf(base % "/dest/link.bin").kind == OperationEntryKind::FileLink); // ...as a link
+	CHECK(readFileContents(base % "/dest/link.bin") == patternedContents(300));
 	CHECK(!QFileInfo{ base % "/target.bin" }.isWritable()); // The target file is untouched, still read-only
 
-	// Restore writability so the temporary directory can be cleaned up. The materialized copy inherited the
-	// target's read-only state along with the rest of its metadata.
-	setFileReadOnly(base % "/target.bin", false);
-	setFileReadOnly(base % "/dest/link.bin", false);
+	setFileReadOnly(base % "/target.bin", false); // So the temporary directory can be cleaned up
 }
 
 TEST_CASE("move executor: a committed-cleanup failure on a directory entry is item-only ActionFailed", "[moveexecutor]")

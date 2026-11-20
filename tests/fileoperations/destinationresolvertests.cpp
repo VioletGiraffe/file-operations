@@ -295,8 +295,9 @@ TEST_CASE("the six-row policy table is exhaustive and exact", "[decisions]")
 		{ IssueKind::ActionFailed, { Retry, Skip, Cancel }, { Skip } },
 		{ IssueKind::ReadOnlySourceRemoval, { MakeWritable, Retry, Skip, Cancel }, { MakeWritable, Skip } },
 		{ IssueKind::UnsupportedEntry, { Skip, Cancel }, { Skip } },
+		{ IssueKind::LinksUnsupported, { CopyLinkTargets, Skip, Cancel }, {} },
 	};
-	constexpr DecisionAction allActions[]{ Skip, Replace, Merge, MakeWritable, Rename, Retry, Cancel };
+	constexpr DecisionAction allActions[]{ Skip, Replace, Merge, MakeWritable, Rename, Retry, Cancel, CopyLinkTargets };
 
 	for (const auto& row : rows)
 	{
@@ -1161,4 +1162,101 @@ TEST_CASE("into-directory mapping happens before collision classification", "[re
 	CHECK(use->path.value() == ep(base % "/dest/a.bin").value());
 	CHECK(use->replacement == ReplacementMode::ReplaceExistingFile);
 	CHECK(decisions.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+}
+
+TEST_CASE("request: link handling applies to a copy, a move always keeps its links", "[request][link]")
+{
+	const QString source = QDir::tempPath() % "/a.bin";
+	const QString destination = QDir::tempPath() % "/dest";
+
+	const auto copy = makeTransferRequest(TransferKind::Copy, { source }, DestinationIntent::IntoDirectory, destination, LinkTransferMode::CopyTargets);
+	REQUIRE(copy.has_value());
+	CHECK(copy->linkMode == LinkTransferMode::CopyTargets);
+
+	const auto move = makeTransferRequest(TransferKind::Move, { source }, DestinationIntent::IntoDirectory, destination, LinkTransferMode::CopyTargets);
+	REQUIRE(move.has_value());
+	CHECK(move->linkMode == LinkTransferMode::CopyLinks);
+
+	const auto defaultCopy = makeTransferRequest(TransferKind::Copy, { source }, DestinationIntent::IntoDirectory, destination);
+	REQUIRE(defaultCopy.has_value());
+	CHECK(defaultCopy->linkMode == LinkTransferMode::CopyLinks);
+}
+
+TEST_CASE("link resolver: a recreated link collides as one entry", "[resolver][link]")
+{
+	QTemporaryDir tempDir;
+	REQUIRE(tempDir.isValid());
+	const QString base = tempDir.path();
+	if (linksUnsupportedByFilesystem(base))
+		return;
+
+	REQUIRE(QDir{}.mkpath(base % "/target"));
+	REQUIRE(createDirectoryLink(base % "/target", base % "/link"));
+	const EntrySnapshot source = snapshotOf(base % "/link");
+	REQUIRE(source.kind == OperationEntryKind::DirectoryLink);
+
+	SECTION("an absent destination is used as is")
+	{
+		ScriptedDecisions decisions;
+		auto context = scriptedContext(decisions);
+
+		const auto choice = resolveLinkDestination(context, source, ep(base % "/new"));
+		const auto* use = std::get_if<UseDestination>(&choice);
+		REQUIRE(use != nullptr);
+		CHECK(use->replacement == ReplacementMode::RequireAbsent);
+		CHECK(decisions.seenRequests.empty());
+	}
+
+	SECTION("a directory is a type mismatch, never a merge")
+	{
+		REQUIRE(QDir{}.mkpath(base % "/existing"));
+		ScriptedDecisions decisions{ .script = { act(DecisionAction::Skip) } };
+		auto context = scriptedContext(decisions);
+
+		CHECK(std::holds_alternative<SkipNode>(resolveLinkDestination(context, source, ep(base % "/existing"))));
+		REQUIRE(decisions.seenRequests.size() == 1);
+		CHECK(decisions.seenRequests[0].issue.kind == IssueKind::TypeMismatch);
+		CHECK(decisions.seenRequests[0].allowedActions == AllowedActions{ DecisionAction::Rename, DecisionAction::Skip, DecisionAction::Cancel });
+	}
+
+	SECTION("a file can be replaced only where a directory link can be published over it")
+	{
+		writeTestFile(base % "/existing.bin", QByteArray{ "DATA" });
+		ScriptedDecisions decisions{ .script = { act(DecisionAction::Skip) } };
+		auto context = scriptedContext(decisions);
+
+		CHECK(std::holds_alternative<SkipNode>(resolveLinkDestination(context, source, ep(base % "/existing.bin"))));
+		REQUIRE(decisions.seenRequests.size() == 1);
+#ifdef _WIN32
+		CHECK(decisions.seenRequests[0].issue.kind == IssueKind::TypeMismatch); // A directory entry on Windows
+#else
+		CHECK(decisions.seenRequests[0].issue.kind == IssueKind::FileReplacement);
+#endif
+	}
+
+	SECTION("the link itself is the same entry")
+	{
+		ScriptedDecisions decisions;
+		auto context = scriptedContext(decisions);
+
+		CHECK(std::holds_alternative<AlreadySatisfied>(resolveLinkDestination(context, source, ep(base % "/link"))));
+		CHECK(decisions.seenRequests.empty());
+	}
+
+	SECTION("the entry the link points to is already satisfied, never offered for replacement")
+	{
+		ScriptedDecisions decisions;
+		auto context = scriptedContext(decisions);
+		CHECK(std::holds_alternative<AlreadySatisfied>(resolveLinkDestination(context, source, ep(base % "/target"))));
+		CHECK(decisions.seenRequests.empty());
+
+		if (symlinkCreationUnavailable(base))
+			return;
+
+		// Replacing it would leave the link pointing at itself, and the file's content gone
+		writeTestFile(base % "/target.bin", QByteArray{ "DATA" });
+		REQUIRE(createFileSymlink(base % "/target.bin", base % "/filelink.bin"));
+		CHECK(std::holds_alternative<AlreadySatisfied>(resolveLinkDestination(context, snapshotOf(base % "/filelink.bin"), ep(base % "/target.bin"))));
+		CHECK(decisions.seenRequests.empty());
+	}
 }

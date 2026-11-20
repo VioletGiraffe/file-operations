@@ -109,8 +109,8 @@ std::optional<EntrySnapshot> classifyChild(BuildState& state, CEntryPath childPa
 			return EntrySnapshot{ mv(childPath), directoryEntry ? OperationEntryKind::DirectoryLink : OperationEntryKind::FileLink, 0 };
 		}
 
-		// Materialization needs the followed target's classification and size.
-		auto inspected = inspectEntry(childPath);
+		// The followed target's classification and size: materialization needs them, a recreated link shows them.
+		auto inspected = inspectEntry(childPath, state.mode == SourceTreeBuildMode::LinkPreservingTransfer ? LinkTransferMode::CopyLinks : LinkTransferMode::CopyTargets);
 		if (!inspected)
 		{
 			// The diagnostic keeps the link's own kind: a directory link must not be reported as a file link.
@@ -183,6 +183,13 @@ BuildNodeResult buildNode(BuildState& state, EntrySnapshot entry, const SourceOw
 	publishScanProgress(state, entry.path);
 
 	SourceNode node{ .entry = mv(entry), .ownership = ownership };
+	if (isLinkKind(node.entry.kind))
+	{
+		if (state.mode == SourceTreeBuildMode::MaterializingTransfer)
+			node.linkTreatment = LinkTreatment::Materialize;
+		else if (state.mode == SourceTreeBuildMode::LinkPreservingTransfer)
+			node.linkTreatment = LinkTreatment::Recreate;
+	}
 
 	bool descend = false;
 	if (node.entry.kind == OperationEntryKind::Directory)
@@ -306,7 +313,7 @@ BuildNodeResult buildNode(BuildState& state, EntrySnapshot entry, const SourceOw
 		}
 	}
 
-	node.subtreeBytes = node.entry.size;
+	node.subtreeBytes = node.linkTreatment == LinkTreatment::Recreate ? 0 : node.entry.size; // A recreated link streams nothing
 	node.subtreeItems = 1;
 	for (const SourceNode& child : node.children)
 	{
@@ -338,6 +345,11 @@ SourceTreeResult buildSourceTreeWithLimits(COperationExecutionContext& context, 
 SourceTreeResult buildSourceTree(COperationExecutionContext& context, EntrySnapshot root, const SourceTreeBuildMode mode)
 {
 	return buildSourceTreeWithLimits(context, mv(root), mode, productionLimits);
+}
+
+SourceTreeBuildMode transferBuildMode(const LinkTransferMode linkMode) noexcept
+{
+	return linkMode == LinkTransferMode::CopyLinks ? SourceTreeBuildMode::LinkPreservingTransfer : SourceTreeBuildMode::MaterializingTransfer;
 }
 
 #ifdef FILE_OPERATIONS_TEST_HOOKS

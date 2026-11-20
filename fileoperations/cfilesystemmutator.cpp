@@ -203,6 +203,19 @@ std::expected<void, CFileSystemError> renameCaseOnlyThroughTemporary(const CEntr
 	return std::unexpected(renameErrorFromNative(*publicationError));
 }
 
+// Link creation knows more than the context-free classifier: these codes mean no such link can be created here at all.
+CFileSystemError linkCreationErrorFromNative(const NativeErrorCode code)
+{
+#ifdef _WIN32
+	if (code == ERROR_PRIVILEGE_NOT_HELD)
+		return { FileErrorCategory::Unsupported, code, QStringLiteral("Creating symbolic links requires Developer Mode or administrator rights") };
+#else
+	if (code == EPERM) // symlink(2): the filesystem does not support symbolic links
+		return makeError(FileErrorCategory::Unsupported, code);
+#endif
+	return makeFileSystemError(code);
+}
+
 #ifdef _WIN32
 // False when the name cannot be read.
 bool storedNameDiffers(const NativePathString& path, const QString& expectedName)
@@ -279,7 +292,7 @@ CFileSystemError makeFileSystemError(const NativeErrorCode code)
 	return makeError(classifyNativeError(code), code);
 }
 
-std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const CEntryPath& path)
+std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const CEntryPath& path, const LinkTransferMode linkMode)
 {
 	using OperationTestHooks::fireHook, OperationTestHooks::Point;
 
@@ -318,7 +331,7 @@ std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const
 		case thin_io::entry_kind::regular_file:
 			return EntrySnapshot{ path, OperationEntryKind::FileLink, target->logical_size };
 		default:
-			return EntrySnapshot{ path, OperationEntryKind::Other, 0 };
+			return EntrySnapshot{ path, linkMode == LinkTransferMode::CopyLinks ? OperationEntryKind::FileLink : OperationEntryKind::Other, 0 };
 		}
 	}
 
@@ -331,6 +344,18 @@ std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const
 	default:
 		return EntrySnapshot{ path, OperationEntryKind::Other, 0 };
 	}
+}
+
+std::expected<thin_io::link_definition, CFileSystemError> readLinkDefinition(const CEntryPath& path)
+{
+	if (const auto forcedError = OperationTestHooks::fireHook(OperationTestHooks::Point::ReadLink_Native))
+		return std::unexpected(makeFileSystemError(*forcedError));
+
+	const auto native = thinIoPath(path);
+	auto definition = thin_io::read_link(nativeCStr(native));
+	if (!definition)
+		return std::unexpected(makeFileSystemError(definition.error().native_code));
+	return std::move(*definition);
 }
 
 std::expected<std::optional<thin_io::entry_identity>, CFileSystemError> readEntryIdentity(const CEntryPath& path, const thin_io::link_behavior linkBehavior)
@@ -451,11 +476,11 @@ std::expected<CopyableDirectoryTimes, CFileSystemError> readCopyableDirectoryTim
 	return result;
 }
 
-thin_io::timestamp readLastWriteTime(const CEntryPath& path)
+thin_io::timestamp readLastWriteTime(const CEntryPath& path, const thin_io::link_behavior linkBehavior)
 {
 	const auto native = thinIoPath(path);
-	const auto times = thin_io::get_times(nativeCStr(native));
-	return times ? times->last_write : thin_io::timestamp{};
+	const auto status = thin_io::get_entry_status(nativeCStr(native), linkBehavior);
+	return status ? status->times.last_write : thin_io::timestamp{};
 }
 
 std::expected<void, CFileSystemError> CFileSystemMutator::renameEntry(const CEntryPath& source, const CEntryPath& destination, const ReplacementMode replacement)
@@ -699,5 +724,37 @@ std::expected<void, CFileSystemError> CFileSystemMutator::setEntryWritable(const
 	if (const auto error = setPermissionsNoFollowError(native, permissions))
 		return std::unexpected(makeFileSystemError(*error));
 
+	return {};
+}
+
+std::expected<void, CFileSystemError> CFileSystemMutator::createLink(const CEntryPath& path, const thin_io::link_definition& definition)
+{
+	if (const auto forcedError = OperationTestHooks::fireHook(OperationTestHooks::Point::CreateLink_Native))
+		return std::unexpected(linkCreationErrorFromNative(*forcedError));
+
+	const auto native = thinIoPath(path);
+	if (const auto created = thin_io::create_link(nativeCStr(native), definition); !created)
+		return std::unexpected(linkCreationErrorFromNative(created.error().native_code));
+	return {};
+}
+
+std::expected<void, CFileSystemError> CFileSystemMutator::applyLinkMetadata(const CEntryPath& path, const thin_io::entry_status& source)
+{
+	if (const auto forcedError = OperationTestHooks::fireHook(OperationTestHooks::Point::ApplyLinkMetadata_Native))
+		return std::unexpected(makeFileSystemError(*forcedError));
+
+	thin_io::entry_times times = source.times;
+	times.last_access = {}; // Never transferred, as for files
+	const auto native = thinIoPath(path);
+	if (!thin_io::set_times(nativeCStr(native), times, thin_io::link_behavior::do_not_follow))
+		return std::unexpected(makeFileSystemError(captureNativeError()));
+
+#ifdef _WIN32
+	if (source.permissions)
+	{
+		if (const auto applied = thin_io::set_permissions(nativeCStr(native), *source.permissions, thin_io::link_behavior::do_not_follow); !applied)
+			return std::unexpected(makeFileSystemError(applied.error().native_code));
+	}
+#endif
 	return {};
 }

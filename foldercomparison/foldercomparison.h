@@ -43,8 +43,7 @@ enum class PairingMode {
 
 // Recursive content-aware comparison of two directory trees. Entries are paired by relative path per pairingMode, and a
 // pair is only read byte by byte when the cheap checks - entry type, then size - cannot already tell the two apart.
-// Directory links are followed and files are compared through links, so a link is judged by the contents a transfer
-// would actually copy.
+// Directory links are followed and files are compared through links, so a link is judged by the contents it gives access to.
 // A directory present on one side only contributes an entry for itself and one for each of its descendants, leaving the
 // caller free to collapse them for display.
 // Progress covers the content-comparison phase only - enumeration runs first and has no denominator to report against.

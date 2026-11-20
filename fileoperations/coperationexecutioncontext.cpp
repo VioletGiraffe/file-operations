@@ -201,10 +201,12 @@ std::optional<Decision> COperationExecutionContext::takePlannedDecision(const Op
 
 void COperationExecutionContext::recordConflict(OperationIssue issue)
 {
+	// The times of the entries the copy reads and replaces: a materialized link's target, and the destination entry itself
 	PlannedConflict row{ .issue = mv(issue) };
-	row.sourceLastWrite = readLastWriteTime(row.issue.source.path);
+	row.sourceLastWrite = readLastWriteTime(row.issue.source.path,
+		row.issue.sourceRecreatedAsLink ? thin_io::link_behavior::do_not_follow : thin_io::link_behavior::follow);
 	if (row.issue.destination)
-		row.destinationLastWrite = readLastWriteTime(row.issue.destination->path);
+		row.destinationLastWrite = readLastWriteTime(row.issue.destination->path, thin_io::link_behavior::do_not_follow);
 	_recordedPlan.push_back(mv(row));
 }
 

@@ -65,6 +65,9 @@ std::string pointName(const Point point)
 	case Point::SetEntryWritable_Native: return "SetEntryWritable_Native";
 	case Point::ApplyDirectoryTimes_Native: return "ApplyDirectoryTimes_Native";
 	case Point::InspectEntry_Native: return "InspectEntry_Native";
+	case Point::ReadLink_Native: return "ReadLink_Native";
+	case Point::CreateLink_Native: return "CreateLink_Native";
+	case Point::ApplyLinkMetadata_Native: return "ApplyLinkMetadata_Native";
 	case Point::StagedCopy_CaptureMetadata_Native: return "StagedCopy_CaptureMetadata_Native";
 	case Point::StagedCopy_CreateStaging_Native: return "StagedCopy_CreateStaging_Native";
 	case Point::StagedCopy_ResizeStaging_Native: return "StagedCopy_ResizeStaging_Native";

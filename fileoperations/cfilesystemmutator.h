@@ -14,8 +14,13 @@
 
 // Fresh state of one filesystem entry; the canonical mapping to OperationEntryKind. nullopt = no entry at
 // the path. Link kind precedes followed classification: a broken (or uninspectable) link is an existing
-// FileLink entry; a link to a non-regular non-directory target is Other.
-[[nodiscard]] std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const CEntryPath& path);
+// FileLink entry. A link to a non-regular non-directory target is Other, or with CopyLinks a FileLink of size 0:
+// a recreated link is copied whatever it points to.
+[[nodiscard]] std::expected<std::optional<EntrySnapshot>, CFileSystemError> inspectEntry(const CEntryPath& path,
+	LinkTransferMode linkMode = LinkTransferMode::CopyTargets);
+
+// What the link at path stores. Unsupported for a link that cannot be recreated, such as a Windows volume mount point.
+[[nodiscard]] std::expected<thin_io::link_definition, CFileSystemError> readLinkDefinition(const CEntryPath& path);
 
 // Fresh filesystem identity for same-object decisions. This deliberately identifies the underlying entry,
 // independent of the mounted namespace view through which it was reached.
@@ -60,8 +65,8 @@ struct DirectoryTraversalIdentity
 // link deliberately: its only link use is materialization of the target directory's contents.
 [[nodiscard]] std::expected<CopyableDirectoryTimes, CFileSystemError> readCopyableDirectoryTimes(const CEntryPath& source);
 
-// For display only: unset when the entry cannot be read or the filesystem keeps no last-write time. Follows links.
-[[nodiscard]] thin_io::timestamp readLastWriteTime(const CEntryPath& path);
+// For display and for comparing conflict sides: unset when the entry cannot be read or the filesystem keeps no last-write time.
+[[nodiscard]] thin_io::timestamp readLastWriteTime(const CEntryPath& path, thin_io::link_behavior linkBehavior);
 
 // Stateless native mutations. These own native path conversion, link-entry addressing, and platform branches;
 // callers never learn which platform primitive ran.
@@ -91,4 +96,12 @@ public:
 
 	// Sets or clears write permission on a non-link regular file; never follows or remediates a link.
 	static std::expected<void, CFileSystemError> setEntryWritable(const EntrySnapshot& entry, bool writable);
+
+	// Creates a link storing the definition's target; an entry already at the path fails with AlreadyExists.
+	// Unsupported where the filesystem holds no such links, or where Windows denies this process symbolic links.
+	static std::expected<void, CFileSystemError> createLink(const CEntryPath& path, const thin_io::link_definition& definition);
+
+	// Applies source's own times, and on Windows its attributes, to the link at path; neither link's target is touched.
+	// POSIX permission bits are not copied: Linux cannot set them on a link.
+	static std::expected<void, CFileSystemError> applyLinkMetadata(const CEntryPath& path, const thin_io::entry_status& source);
 };
