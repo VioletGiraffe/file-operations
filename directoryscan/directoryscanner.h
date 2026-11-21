@@ -20,8 +20,10 @@ RESTORE_COMPILER_WARNINGS
 // Siblings arrive in the filesystem's order, unsorted.
 // Link cycles are detected and not descended into, so the scan always terminates.
 // A directory below the root, or a link to one, that isDirectoryExcluded returns true for is neither reported nor descended into.
+// A directory that isScannedSeparately returns true for is reported but not descended into. dirPath ends with '/'.
 void scanDirectory(const QString& rootPath,
 	const std::function<void (const QString& parentPath, const thin_io::directory_entry& entry, bool reachedThroughLink)>& observer,
 	const std::atomic<bool>& abort = std::atomic<bool>{false},
 	const std::function<bool (const thin_io::directory_entry& entry)>& isDirectoryExcluded = {},
-	bool followDirLinks = true);
+	bool followDirLinks = true,
+	const std::function<bool (const QString& dirPath)>& isScannedSeparately = {});
