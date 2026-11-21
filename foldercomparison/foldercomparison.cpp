@@ -35,7 +35,7 @@ QString rootPrefix(const QString& root)
 {
 	const QString path = normalizedAbsolutePath(root);
 	assert_r(!path.isEmpty());
-	return path.endsWith('/') ? path : QString{ path % '/' };
+	return withTrailingSeparator(path);
 }
 
 SideMap enumerateSide(const QString& prefix, const std::atomic<bool>& abort)

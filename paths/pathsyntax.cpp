@@ -75,6 +75,13 @@ bool isRootPath(const QStringView path)
 	return rootLength > 0 && (path.size() == rootLength || (path.size() == rootLength + 1 && isSeparator(path.back())));
 }
 
+QString withTrailingSeparator(QString path)
+{
+	if (!path.endsWith(u'/'))
+		path += u'/';
+	return path;
+}
+
 QString normalizedAbsolutePath(const QStringView path)
 {
 	const qsizetype rootLength = absoluteRootLength(path);

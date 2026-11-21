@@ -19,6 +19,9 @@ RESTORE_COMPILER_WARNINGS
 // A root alone, with or without a trailing separator
 [[nodiscard]] bool isRootPath(QStringView path);
 
+// Requires a '/'-separated path
+[[nodiscard]] QString withTrailingSeparator(QString path);
+
 // '/'-separated, repeated separators collapsed, "." and ".." resolved lexically without climbing above the root, the drive
 // letter uppercase, a trailing separator only on "/" and "C:/". Names are kept verbatim, trailing dots and spaces included.
 // Empty when the path is not absolute.

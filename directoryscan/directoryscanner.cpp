@@ -1,6 +1,7 @@
 #include "directoryscanner.h"
 
 #include "thinioqstring.h"
+#include "paths/pathsyntax.h"
 #include "qt_paths.hpp" // thin_io
 
 DISABLE_COMPILER_WARNINGS
@@ -96,7 +97,7 @@ void scanDirectory(const QString& rootPath,
 	const bool followDirLinks,
 	const std::function<bool (const QString&)>& isScannedSeparately)
 {
-	const QString dirPath = rootPath.endsWith('/') ? rootPath : QString{ rootPath % '/' };
+	const QString dirPath = withTrailingSeparator(rootPath);
 
 	const auto rootEntry = getDirectoryEntry(withoutTrailingSeparator(dirPath));
 	if (!rootEntry || followedStatus(*rootEntry).attributes.kind != thin_io::entry_kind::directory)
