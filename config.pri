@@ -27,7 +27,7 @@ exists($$PWD/../global.pri) {
 	}
 
 	mac* {
-		QMAKE_MACOSX_DEPLOYMENT_TARGET = 13.3
+		QMAKE_MACOSX_DEPLOYMENT_TARGET = 14.4
 		# Qt 6.9 headers use ARM ACLE intrinsics without including arm_acle.h
 		contains(QMAKE_HOST.arch, arm64)|contains(QMAKE_APPLE_DEVICE_ARCHS, arm64): QMAKE_CXXFLAGS += -include arm_acle.h
 	}
